@@ -187,6 +187,7 @@ class SlideFrame(tk.Frame):
         # Update the image
         if current_slide.image:
             self.image_label.config(image=current_slide.image)
+            self.image_label.image = current_slide.image # <-- Keep a reference every time
         else:
             # If no image, show a placeholder
             placeholder = self.create_placeholder_image(400, 300, f"Illustration for Slide {self.controller.current_slide_index + 1} will appear here.")
@@ -234,6 +235,11 @@ class SlideFrame(tk.Frame):
             return
 
         current_slide = self.controller.slides[self.controller.current_slide_index]
+        # Cache counts BEFORE clearing
+        num_subjects = len(current_slide.subjects)
+        num_actions = len(current_slide.actions)
+        num_texts = len(current_slide.texts)
+        
         current_slide.subjects = []
         current_slide.actions = []
         current_slide.texts = []
@@ -243,11 +249,6 @@ class SlideFrame(tk.Frame):
         widget_iter = iter(w for w in self.input_widgets if isinstance(w, (tk.Entry, tk.Text)))
         
         try:
-            # Assumes one subject section, then one action, then one text section.
-            num_subjects = len(self.controller.slides[self.controller.current_slide_index].subjects)
-            num_actions = len(self.controller.slides[self.controller.current_slide_index].actions)
-            num_texts = len(self.controller.slides[self.controller.current_slide_index].texts)
-            
             for _ in range(num_subjects):
                 current_slide.subjects.append(next(widget_iter).get())
             for _ in range(num_actions):
