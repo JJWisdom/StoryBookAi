@@ -1,0 +1,16 @@
+# Large AI model files and temp directories
+webui_forge_cu121_torch231/
+webui_forge_cu121_torch231.7z
+
+# Generated content
+generated_images/
+logs/
+temp/
+__pycache__/
+
+# Environment and config files
+venv/
+.env
+*.pyc
+*.pyo
+*.pydwebui_forge_cu121_torch231/
