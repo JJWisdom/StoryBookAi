@@ -266,8 +266,6 @@ class StoryBookApp(tk.Tk):
         self.slide_manager.create_from_story(story_text)
         self.show_frame("SlideFrame")
         self.frames["SlideFrame"].update_display()
-        # auto-illustrate first slide
-        self.illustrate_current_slide()
 
     def navigate(self, direction: int):
         self.frames["SlideFrame"].save_current_slide_data()
@@ -445,7 +443,7 @@ class StoryBookApp(tk.Tk):
             pil.thumbnail((IMG_W, IMG_H), Image.LANCZOS)
             tkimg = ImageTk.PhotoImage(pil)
             slide.photo_image = tkimg
-            self.after(0, self._update_slide_image, tkimg, slide.last_prompt)
+            self.after(0, self._update_slide_image, slide, tkimg)
             return True
         except Exception as e:
             logger.error("Failed to open or display image: %s", e)
@@ -593,19 +591,17 @@ class StoryBookApp(tk.Tk):
             messagebox.showerror("ZIP Error", f"Failed to create ZIP: {e}")
 
     # ----------------- UI updates -----------------
-    def _update_slide_image(self, photo_image, prompt_text: str = ""):
-        slide = self.slide_manager.get_current()
-        if not slide:
-            return
-        slide.photo_image = photo_image
+    def _update_slide_image(self, slide: "Slide", photo_image):
+        slide.photo_image = photo_image  # store on the correct slide regardless of navigation
         sf = self.frames["SlideFrame"]
-        sf.image_label.config(image=photo_image)
-        sf.image_label.image = photo_image
-        sf.prompt_view.configure(state="normal")
-        sf.prompt_view.delete("1.0", "end")
-        if slide.last_prompt:
-            sf.prompt_view.insert("1.0", slide.last_prompt)
-        sf.prompt_view.configure(state="disabled")
+        if self.slide_manager.get_current() is slide:
+            sf.image_label.config(image=photo_image)
+            sf.image_label.image = photo_image
+            sf.prompt_view.configure(state="normal")
+            sf.prompt_view.delete("1.0", "end")
+            if slide.last_prompt:
+                sf.prompt_view.insert("1.0", slide.last_prompt)
+            sf.prompt_view.configure(state="disabled")
         sf.show_generation_status(False)
         self.is_generating = False
 
@@ -682,78 +678,88 @@ class SlideFrame(tk.Frame):
         self._build()
 
     def _build(self):
-        header = tk.Frame(self, bg=BG)
-        header.pack(fill="x", padx=12, pady=8)
+        # ── Bottom bar (packed first so content can expand into remaining space) ──
+        bottom = tk.Frame(self, bg=BG)
+        bottom.pack(side="bottom", fill="x", padx=12, pady=(4, 8))
+        self.publish_btn = ttk.Button(bottom, text="Publish", style="Accent.TButton",
+                                      command=self.controller.publish_story)
+        self.publish_btn.pack(side="right")
+        self.del_btn = ttk.Button(bottom, text="Delete Slide", style="Secondary.TButton",
+                                  command=self.controller.delete_current_slide)
+        self.del_btn.pack(side="left")
 
-        self.prev_btn = ttk.Button(header, text="◀ Prev", style="Nav.TButton", command=lambda: self.controller.navigate(-1))
+        # ── Nav strip: Home | ◀ ▶ | [1][2][3] | + Slide ──
+        nav = tk.Frame(self, bg=BG)
+        nav.pack(fill="x", padx=12, pady=(8, 4))
+
+        ttk.Button(nav, text="⌂ Home", style="Secondary.TButton",
+                   command=lambda: self.controller.show_frame("StartFrame")).pack(side="left", padx=(0, 12))
+
+        self.prev_btn = ttk.Button(nav, text="◀", style="Nav.TButton", width=3,
+                                   command=lambda: self._navigate_to(self.controller.slide_manager.current_index - 1))
         self.prev_btn.pack(side="left")
-        self.next_btn = ttk.Button(header, text="Next ▶", style="Nav.TButton", command=lambda: self.controller.navigate(1))
-        self.next_btn.pack(side="left", padx=6)
+        self.next_btn = ttk.Button(nav, text="▶", style="Nav.TButton", width=3,
+                                   command=lambda: self._navigate_to(self.controller.slide_manager.current_index + 1))
+        self.next_btn.pack(side="left", padx=(2, 8))
 
-        self.slide_label = tk.Label(header, text="Slide 1 of 1", font=H2_FONT, bg=BG)
-        self.slide_label.pack(side="left", padx=12)
+        self.slide_nav_frame = tk.Frame(nav, bg=BG)
+        self.slide_nav_frame.pack(side="left", fill="x", expand=True)
+        self.slide_nav_buttons: List[tk.Button] = []
 
-        self.illustrate_btn = ttk.Button(header, text="Illustrate", style="Accent.TButton", command=self._illustrate_or_publish)
-        self.illustrate_btn.pack(side="right", padx=6)
-        self.publish_btn = ttk.Button(header, text="Publish", style="Accent.TButton", command=self.controller.publish_story)
-        self.publish_btn.pack(side="right", padx=6)
-        self.del_btn = ttk.Button(header, text="Delete", style="Secondary.TButton", command=self.controller.delete_current_slide)
-        self.del_btn.pack(side="right", padx=6)
+        ttk.Button(nav, text="+ Slide", style="Secondary.TButton",
+                   command=self.controller.add_new_slide).pack(side="left", padx=(8, 0))
 
+        # ── Content area ──
         content = tk.Frame(self, bg=BG)
-        content.pack(fill="both", expand=True, padx=12, pady=8)
+        content.pack(fill="both", expand=True, padx=12, pady=(0, 4))
 
+        # Left panel: Subjects/Actions + Text overlay
         left = tk.Frame(content, bg=BG)
-        left.pack(side="left", fill="y", padx=(0,12))
+        left.pack(side="left", fill="y", padx=(0, 12))
 
-        # Subject/Action area
         sa_frame = tk.LabelFrame(left, text="Subjects & Actions", bg=BG)
-        sa_frame.pack(fill="x", pady=(6, 12))
+        sa_frame.pack(fill="x", pady=(0, 8))
         self.sa_container = tk.Frame(sa_frame, bg=BG)
         self.sa_container.pack(fill="x", padx=6, pady=6)
 
         pair_controls = tk.Frame(sa_frame, bg=BG)
-        pair_controls.pack(fill="x", pady=(6,0))
-        ttk.Button(pair_controls, text="Add Person", style="Secondary.TButton", command=self.controller.add_person_pair).pack(side="left", padx=6)
-        ttk.Button(pair_controls, text="Remove Person", style="Secondary.TButton", command=self.controller.remove_person_pair).pack(side="left", padx=6)
+        pair_controls.pack(fill="x", pady=(4, 0))
+        ttk.Button(pair_controls, text="Add Person", style="Secondary.TButton",
+                   command=self.controller.add_person_pair).pack(side="left", padx=6)
+        ttk.Button(pair_controls, text="Remove Person", style="Secondary.TButton",
+                   command=self.controller.remove_person_pair).pack(side="left", padx=6)
 
-        # Text overlay area
         text_frame = tk.LabelFrame(left, text="Slide Text (Overlay)", bg=BG)
-        text_frame.pack(fill="both", expand=True, pady=(6,12))
-        self.text_widget = scrolledtext.ScrolledText(text_frame, width=40, height=10, wrap=tk.WORD)
+        text_frame.pack(fill="both", expand=True, pady=(8, 0))
+        self.text_widget = scrolledtext.ScrolledText(text_frame, width=38, height=8, wrap=tk.WORD)
         self.text_widget.pack(fill="both", expand=True, padx=6, pady=6)
+        self.text_widget.bind("<KeyRelease>", self._update_prompt_preview)
 
-        # Preview & prompt
+        # Right panel: image → Illustrate (centred below image) → prompt preview → status
         right = tk.Frame(content, bg=BG)
         right.pack(side="left", fill="both", expand=True)
 
         self.image_label = tk.Label(right, bg="#F0F0F0", width=IMG_W, height=IMG_H)
-        self.image_label.pack(padx=6, pady=6)
+        self.image_label.pack(padx=6, pady=(6, 4))
 
-        pv_frame = tk.LabelFrame(right, text="Last AI Prompt", bg=BG)
-        pv_frame.pack(fill="x", padx=6, pady=(6,12))
-        self.prompt_view = scrolledtext.ScrolledText(pv_frame, width=40, height=6, wrap=tk.WORD)
+        self.illustrate_btn = ttk.Button(right, text="Illustrate", style="Accent.TButton",
+                                         command=self.controller.illustrate_current_slide)
+        self.illustrate_btn.pack(pady=(0, 8))  # naturally centres under the image
+
+        pv_frame = tk.LabelFrame(right, text="Prompt Preview", bg=BG)
+        pv_frame.pack(fill="x", padx=6, pady=(0, 4))
+        self.prompt_view = scrolledtext.ScrolledText(pv_frame, width=40, height=5, wrap=tk.WORD)
         self.prompt_view.pack(fill="both", padx=6, pady=6)
         self.prompt_view.configure(state="disabled")
 
         self.status_var = tk.StringVar(value="Idle")
         self.status_label = tk.Label(right, textvariable=self.status_var, bg=BG, fg=INK_MUTED)
-        self.status_label.pack(padx=6, pady=(4,8))
+        self.status_label.pack(padx=6, pady=(2, 4))
 
-        # internal widgets
+        # Internal state
         self.subject_entries: List[tk.Entry] = []
         self.action_entries: List[tk.Entry] = []
 
-    def _illustrate_or_publish(self):
-        # If last slide offer publish
-        total = self.controller.slide_manager.count()
-        current = self.controller.slide_manager.current_index
-        if current == total - 1:
-            res = messagebox.askyesno("Publish", "This is the last slide. Publish storybook now?")
-            if res:
-                self.controller.publish_story()
-                return
-        self.controller.illustrate_current_slide()
 
     def update_display(self):
         if not self.controller.slide_manager.slides:
@@ -763,17 +769,9 @@ class SlideFrame(tk.Frame):
             return
         total = self.controller.slide_manager.count()
         cur = self.controller.slide_manager.current_index + 1
-        self.slide_label.config(text=f"Slide {cur} of {total}")
 
-        # enable/disable nav
-        if self.controller.slide_manager.current_index > 0:
-            self.prev_btn.state(["!disabled"])
-        else:
-            self.prev_btn.state(["disabled"])
-        if self.controller.slide_manager.current_index < total - 1:
-            self.next_btn.state(["!disabled"])
-        else:
-            self.next_btn.state(["disabled"])
+        # Rebuild the live numbered slide navigator
+        self._rebuild_slide_nav()
 
         # clear subject/action containers
         for w in list(self.sa_container.winfo_children()):
@@ -789,15 +787,20 @@ class SlideFrame(tk.Frame):
             slide.actions.append("")
 
         for i in range(n):
-            row = tk.Frame(self.sa_container, bg=BG)
-            row.pack(fill="x", pady=2)
-            subj = tk.Entry(row)
+            block = tk.Frame(self.sa_container, bg=BG)
+            block.pack(fill="x", pady=4)
+            tk.Label(block, text="Who is the subject?", bg=BG, fg=INK_MUTED,
+                     font=("Segoe UI", 9)).pack(anchor="w")
+            subj = tk.Entry(block)
             subj.insert(0, slide.subjects[i])
-            subj.pack(side="left", padx=(0,6))
-            tk.Label(row, text="does", bg=BG).pack(side="left", padx=(0,6))
-            act = tk.Entry(row)
+            subj.pack(fill="x", pady=(2, 6))
+            subj.bind("<KeyRelease>", self._update_prompt_preview)
+            tk.Label(block, text="What are they doing?", bg=BG, fg=INK_MUTED,
+                     font=("Segoe UI", 9)).pack(anchor="w")
+            act = tk.Entry(block)
             act.insert(0, slide.actions[i])
-            act.pack(side="left", padx=(0,6))
+            act.pack(fill="x", pady=(2, 0))
+            act.bind("<KeyRelease>", self._update_prompt_preview)
             self.subject_entries.append(subj)
             self.action_entries.append(act)
 
@@ -806,11 +809,12 @@ class SlideFrame(tk.Frame):
         if slide.texts and slide.texts[0]:
             self.text_widget.insert("1.0", slide.texts[0])
 
-        # prompt
+        # prompt preview — show last generated prompt if present, else build a live preview
         self.prompt_view.configure(state="normal")
         self.prompt_view.delete("1.0", "end")
-        if slide.last_prompt:
-            self.prompt_view.insert("1.0", slide.last_prompt)
+        display_prompt = slide.last_prompt or self.controller._build_prompt_from_slide(slide)
+        if display_prompt:
+            self.prompt_view.insert("1.0", display_prompt)
         self.prompt_view.configure(state="disabled")
 
         # image
@@ -821,6 +825,56 @@ class SlideFrame(tk.Frame):
             self.show_placeholder_image()
 
         self.status_var.set(f"Slide {cur} / {total}")
+
+    def _rebuild_slide_nav(self):
+        for btn in self.slide_nav_buttons:
+            btn.destroy()
+        self.slide_nav_buttons.clear()
+
+        total = self.controller.slide_manager.count()
+        cur = self.controller.slide_manager.current_index
+
+        for i in range(total):
+            is_cur = (i == cur)
+            btn = tk.Button(
+                self.slide_nav_frame,
+                text=str(i + 1),
+                width=3,
+                bg=ACCENT if is_cur else SURFACE,
+                fg="white" if is_cur else INK,
+                activebackground=ACCENT_HOV,
+                activeforeground="white",
+                relief="flat",
+                bd=0,
+                font=("Segoe UI", 9, "bold" if is_cur else "normal"),
+                cursor="hand2",
+                command=lambda idx=i: self._navigate_to(idx),
+            )
+            btn.pack(side="left", padx=2, pady=2)
+            self.slide_nav_buttons.append(btn)
+
+        self.prev_btn.state(["!disabled"] if cur > 0 else ["disabled"])
+        self.next_btn.state(["!disabled"] if cur < total - 1 else ["disabled"])
+
+    def _navigate_to(self, index: int):
+        total = self.controller.slide_manager.count()
+        if not (0 <= index < total):
+            return
+        self.save_current_slide_data()
+        self.controller.slide_manager.current_index = index
+        self.update_display()
+
+    def _update_prompt_preview(self, _event=None):
+        self.save_current_slide_data()
+        slide = self.controller.slide_manager.get_current()
+        if not slide:
+            return
+        prompt = self.controller._build_prompt_from_slide(slide)
+        self.prompt_view.configure(state="normal")
+        self.prompt_view.delete("1.0", "end")
+        if prompt:
+            self.prompt_view.insert("1.0", prompt)
+        self.prompt_view.configure(state="disabled")
 
     def save_current_slide_data(self):
         slide = self.controller.slide_manager.get_current()

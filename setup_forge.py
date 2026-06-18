@@ -154,49 +154,52 @@ def configure_forge(forge_path: Path):
     """Configure Forge settings via JSON files"""
     project_root = Path(__file__).parent
     output_dir = str(project_root / "generated_images")
-    
+
+    # Portable builds keep config.json/ui-config.json inside a webui subfolder.
+    webui_dir = forge_path / "webui"
+    settings_root = webui_dir if webui_dir.exists() else forge_path
+
     # Edit config.json for output dir and default model
-    config_path = forge_path / "config.json"
+    config_path = settings_root / "config.json"
     if not config_path.exists():
         print(f"WARNING: config.json not found at {config_path}. Creating new.")
         config = {}
     else:
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
-    
+
     # Set output directory
     config["outdir_txt2img_samples"] = output_dir
     config["outdir_img2img_samples"] = output_dir
-    
+
     # Select and set default model
     default_model = _select_default_model(forge_path)
     if default_model:
         config["sd_model_checkpoint"] = default_model
-    
-    with open(config_path, 'w') as f:
+
+    with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2)
-    
+
     print(f"Updated config.json with output dir: {output_dir}")
     if default_model:
         print(f"Set default model: {default_model}")
-    
+
     # Edit ui-config.json for generation defaults
-    ui_config_path = forge_path / "ui-config.json"
+    ui_config_path = settings_root / "ui-config.json"
     if not ui_config_path.exists():
         print(f"WARNING: ui-config.json not found at {ui_config_path}. Skipping UI defaults.")
         return
-    
-    with open(ui_config_path, 'r') as f:
+
+    with open(ui_config_path, 'r', encoding='utf-8') as f:
         ui_config = json.load(f)
-    
+
     # Set UI defaults from storybook_config generation params
-    # Assuming storybook_config is already created, load it
     app_config_path = project_root / "storybook_config.json"
     if app_config_path.exists():
-        with open(app_config_path, 'r') as f:
+        with open(app_config_path, 'r', encoding='utf-8') as f:
             app_config = json.load(f)
         gen = app_config.get("generation", {})
-        
+
         ui_config["txt2img/Width/value"] = gen.get("width", 512)
         ui_config["txt2img/Height/value"] = gen.get("height", 512)
         ui_config["txt2img/Steps/value"] = gen.get("steps", 25)
@@ -204,15 +207,18 @@ def configure_forge(forge_path: Path):
         ui_config["txt2img/Sampler/value"] = gen.get("sampler", "Euler a")
         ui_config["txt2img/Seed/value"] = gen.get("seed", -1)
         ui_config["txt2img/Negative prompt/value"] = gen.get("negative_prompt", "blurry, bad quality, deformed, ugly")
-    
-    with open(ui_config_path, 'w') as f:
+
+    with open(ui_config_path, 'w', encoding='utf-8') as f:
         json.dump(ui_config, f, indent=2)
     
     print("Updated ui-config.json with default generation settings.")
 
 def _select_default_model(forge_path: Path) -> str:
     """Prompt user to select default safetensors model"""
-    models_dir = forge_path / "models" / "Stable-diffusion"
+    # Portable builds keep models inside a webui subfolder.
+    webui_dir = forge_path / "webui"
+    search_root = webui_dir if webui_dir.exists() else forge_path
+    models_dir = search_root / "models" / "Stable-diffusion"
     if not models_dir.exists():
         print("WARNING: No models/Stable-diffusion folder found. Skipping default model selection.")
         return ""
