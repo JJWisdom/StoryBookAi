@@ -5,7 +5,6 @@ import logging
 import requests
 import os
 import signal
-import sys
 import psutil
 
 logging.basicConfig(
@@ -178,11 +177,12 @@ class ForgeHandler:
 
         try:
             os.kill(self.process.pid, signal.SIGTERM)
-        except:
+        except OSError as e:
+            logging.warning("SIGTERM failed (%s), falling back to terminate()", e)
             try:
                 self.process.terminate()
-            except:
-                pass
+            except OSError as e2:
+                logging.error("terminate() also failed: %s", e2)
 
         try:
             self.process.wait(timeout=10)
@@ -195,7 +195,11 @@ class ForgeHandler:
     # ------------------------------------------------------------
     # Send prompt → generate image → return image path
     # ------------------------------------------------------------
-    def generate_image(self, prompt, output_dir="generated_images"):
+    def generate_image(self, prompt, output_dir="generated_images",
+                       width=512, height=512, steps=25, cfg_scale=7.0,
+                       sampler_name="Euler a",
+                       negative_prompt="blurry, bad quality, deformed, ugly, disfigured",
+                       seed=-1, request_timeout=180):
         # Double-check Forge is actually responding
         if not self.check_forge_ready():
             raise RuntimeError("Forge is not running or not responding to API.")
@@ -204,12 +208,13 @@ class ForgeHandler:
 
         payload = {
             "prompt": prompt,
-            "steps": 25,
-            "width": 1024,
-            "height": 1024,
-            "cfg_scale": 7,
-            "sampler_name": "Euler a",
-            "negative_prompt": "blurry, bad quality, deformed, ugly, disfigured"
+            "steps": steps,
+            "width": width,
+            "height": height,
+            "cfg_scale": cfg_scale,
+            "sampler_name": sampler_name,
+            "negative_prompt": negative_prompt,
+            "seed": seed,
         }
 
         logging.info(f"Sending prompt to Forge: {prompt[:100]}...")
@@ -218,7 +223,7 @@ class ForgeHandler:
             r = requests.post(
                 f"{self.api_url}/sdapi/v1/txt2img",
                 json=payload,
-                timeout=180  # 3 minute timeout for generation
+                timeout=request_timeout,
             )
         except requests.exceptions.RequestException as e:
             logging.error(f"Forge request failed: {e}")
@@ -250,24 +255,25 @@ class ForgeHandler:
 
 
     def shutdown(self):
-        """Terminate Forge and all child processes."""
+        """Terminate Forge and all child processes via psutil."""
         if self.process is None:
             return
 
+        self.running = False
+        self.startup_complete = False
+
         try:
             proc = psutil.Process(self.process.pid)
-
-        # Kill all child processes
             for child in proc.children(recursive=True):
                 try:
                     child.kill()
-                except:
+                except OSError:
                     pass
-
             proc.kill()
-            self.process = None
         except Exception as e:
-            self.logger.error(f"Error shutting down Forge: {e}")
+            logging.error(f"Error shutting down Forge: {e}")
+        finally:
+            self.process = None
 
 
 

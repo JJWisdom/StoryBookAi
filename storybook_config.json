@@ -3,7 +3,8 @@
     "path": "C:/Users/Hokeuai/Documents/Textbooks/Artificial Intelligence/StoryBookAi/webui_forge_cu121_torch231",
     "port": 7860,
     "auto_start": true,
-    "startup_timeout": 300
+    "startup_timeout": 300,
+    "request_timeout": 180
   },
   "generation": {
     "width": 512,
@@ -13,5 +14,9 @@
     "sampler": "Euler a",
     "seed": -1,
     "negative_prompt": "blurry, bad quality, deformed, ugly"
+  },
+  "output": {
+    "output_dir": "generated_images",
+    "font_size": 24
   }
 }

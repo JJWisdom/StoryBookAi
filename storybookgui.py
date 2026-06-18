@@ -176,68 +176,79 @@ class StoryBookApp(tk.Tk):
 
     # ----------------- Forge init -----------------
     def _check_forge_status(self):
-        """Check if Forge is already running, otherwise start it"""
+        """Check if Forge is already running, otherwise start it."""
         startup_frame = self.frames["StartupFrame"]
-        
-        # Try to connect to existing Forge first
         startup_frame.update_status("Checking if Forge is already running...")
-        
+
+        # Probe the port before touching ForgeHandler so we never create two instances.
+        already_running = False
         try:
-            self.forge_handler = ForgeHandler(self.forge_root, self.forge_port)
-            
-            # Test connection to existing Forge
-            response = requests.get(f"http://127.0.0.1:{self.forge_port}/sdapi/v1/sd-models", timeout=5)
-            if response.status_code == 200:
-                startup_frame.update_status("✓ Connected to existing Forge instance")
+            response = requests.get(
+                f"http://127.0.0.1:{self.forge_port}/sdapi/v1/sd-models", timeout=5
+            )
+            already_running = response.status_code == 200
+        except requests.exceptions.RequestException:
+            pass
+
+        if already_running:
+            try:
+                self.forge_handler = ForgeHandler(self.forge_root, self.forge_port)
                 self.forge_handler.running = True
                 self.forge_handler.startup_complete = True
+                startup_frame.update_status("✓ Connected to existing Forge instance")
                 self.after(1000, lambda: self.show_frame("StartFrame"))
-                return
-        except:
-            pass
-        
-        # Need to start Forge
+            except Exception as e:
+                logger.error("Failed to create ForgeHandler for existing Forge: %s", e)
+                startup_frame.update_status(f"❌ Handler error: {e}")
+                self.after(3000, lambda: self.show_frame("StartFrame"))
+            return
+
+        # Forge is not running — start it (ForgeHandler created inside this thread).
         startup_frame.update_status("Starting Forge AI Engine...")
         threading.Thread(target=self._start_forge_with_progress, daemon=True).start()
 
     def _start_forge_with_progress(self):
-        """Start Forge with progress updates"""
+        """Start Forge with progress updates — runs on a background thread."""
         startup_frame = self.frames["StartupFrame"]
-        
+
+        def status(text: str):
+            # All widget calls must happen on the main thread.
+            self.after(0, startup_frame.update_status, text)
+
         try:
             cfg = self._load_config()
             if not cfg:
-                startup_frame.update_status("⚠ No config found. Please run setup first.")
+                status("⚠ No config found. Please run setup first.")
                 self.after(3000, lambda: self.show_frame("StartFrame"))
                 return
-                
+
             forge_cfg = cfg.get("forge", {})
             forge_root = forge_cfg.get("path") or self.forge_root
             port = forge_cfg.get("port", self.forge_port)
-            
+
             if not forge_root or not os.path.exists(forge_root):
-                startup_frame.update_status("❌ Forge path not found. Please check config.")
+                status("❌ Forge path not found. Please check config.")
                 self.after(3000, lambda: self.show_frame("StartFrame"))
                 return
-                
-            startup_frame.update_status(f"Starting Forge at: {forge_root}")
-            
+
+            status(f"Starting Forge at: {forge_root}")
+
             self.forge_handler = ForgeHandler(forge_root, port)
-            
+
             if self.forge_handler.start_forge():
-                startup_frame.update_status("✓ Forge started successfully!")
-                startup_frame.update_status("✓ Ready to create storybooks!")
+                status("✓ Forge started successfully!")
+                status("✓ Ready to create storybooks!")
                 self.after(2000, lambda: self.show_frame("StartFrame"))
             else:
-                startup_frame.update_status("❌ Failed to start Forge.")
-                startup_frame.update_status("Please check logs and try again.")
+                status("❌ Failed to start Forge.")
+                status("Please check logs and try again.")
                 self.after(5000, lambda: self.show_frame("StartFrame"))
-                
+
         except Exception as e:
-            startup_frame.update_status(f"❌ Error: {str(e)}")
+            status(f"❌ Error: {str(e)}")
             logger.error("Forge startup error: %s", e)
     def _load_config(self) -> Optional[dict]:
-        cfg_path = "storybook_config.json"
+        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storybook_config.json")
         try:
             if os.path.exists(cfg_path):
                 with open(cfg_path, "r", encoding="utf-8") as fh:
@@ -348,8 +359,7 @@ class StoryBookApp(tk.Tk):
             try:
                 ok = self._generate_single_image(slide, prompt, sf)
                 if ok:
-                    self.after(0, sf.show_generation_status, False)
-                    self.is_generating = False
+                    # UI reset is handled by _update_slide_image via self.after — do nothing here.
                     return
                 else:
                     logger.warning("Generation attempt %d failed (no exception).", attempt + 1)
@@ -359,7 +369,7 @@ class StoryBookApp(tk.Tk):
             time.sleep(1 + attempt * 2)
         self.after(0, lambda: messagebox.showerror("Generation failed", f"Failed after {max_retries} attempts.\n{last_exc}"))
         self.after(0, sf.show_generation_status, False)
-        self.is_generating = False
+        self.after(0, lambda: setattr(self, "is_generating", False))
 
     def _generate_single_image(self, slide: Slide, prompt: str, slide_frame) -> bool:
         # Ensure Forge handler exists and running
@@ -379,9 +389,31 @@ class StoryBookApp(tk.Tk):
             logger.error("Error ensuring Forge is running: %s", e)
             return False
 
-        # Build generation config (for forge_handler.generate_image we'll pass prompt only)
+        # Read generation settings from config; fall back to safe defaults if missing.
+        gen_cfg = {}
+        forge_cfg = {}
+        out_cfg = {}
         try:
-            outpath = self.forge_handler.generate_image(prompt)
+            cfg = self._load_config() or {}
+            gen_cfg = cfg.get("generation", {})
+            forge_cfg = cfg.get("forge", {})
+            out_cfg = cfg.get("output", {})
+        except Exception as e:
+            logger.warning("Could not load generation config, using defaults: %s", e)
+
+        try:
+            outpath = self.forge_handler.generate_image(
+                prompt,
+                output_dir=out_cfg.get("output_dir", "generated_images"),
+                width=gen_cfg.get("width", 512),
+                height=gen_cfg.get("height", 512),
+                steps=gen_cfg.get("steps", 25),
+                cfg_scale=gen_cfg.get("cfg_scale", 7.0),
+                sampler_name=gen_cfg.get("sampler", "Euler a"),
+                negative_prompt=gen_cfg.get("negative_prompt", "blurry, bad quality, deformed, ugly"),
+                seed=gen_cfg.get("seed", -1),
+                request_timeout=forge_cfg.get("request_timeout", 180),
+            )
             if not outpath or not os.path.exists(outpath):
                 logger.error("No image returned from Forge or file missing.")
                 return False
@@ -596,7 +628,9 @@ class StoryBookApp(tk.Tk):
     def shutdown(self):
         if self.forge_handler:
             try:
-                self.forge_handler.stop_forge()
+                # shutdown() kills the full process tree via psutil; stop_forge() only
+                # terminates the top-level cmd.exe and leaves Forge's Python workers alive.
+                self.forge_handler.shutdown()
             except Exception:
                 logger.debug("Error stopping forge", exc_info=True)
         try:
