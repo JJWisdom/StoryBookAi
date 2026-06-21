@@ -25,7 +25,8 @@ from PIL import Image, ImageTk, ImageDraw
 
 # Local modules (must exist in project)
 from forge_handler import ForgeHandler
-from simple_prompt_transformer import SimplePromptTransformer
+from claude_prompt_transformer import ClaudePromptTransformer
+import claude_prompt_transformer as _cpt_module
 from image_processor import get_image_processor
 
 # Logging
@@ -48,24 +49,31 @@ H2_FONT = ("Segoe UI", 11, "bold")
 BODY_FONT = ("Segoe UI", 11)
 
 # Limits
-MAX_PROMPT_LENGTH = 1200
+MAX_PROMPT_LENGTH = 380
 MAX_TEXT_OVERLAY = 1400
 
 # Initialize transformer and image processor
-transformer = SimplePromptTransformer()
+transformer = ClaudePromptTransformer()
 image_processor = get_image_processor()
+
+_VIOLATION_CACHE_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_images")
+_VIOLATION_DELIBERATE = os.path.join(_VIOLATION_CACHE_DIR, "violation-intent.png")
+_VIOLATION_ACCIDENTAL = os.path.join(_VIOLATION_CACHE_DIR, "violation-unintent.png")
 
 
 # ===== Data model =====
 class Slide:
-    def __init__(self):
+    def __init__(self, text: str = ""):
         self.subjects: List[str] = [""]
         self.actions: List[str] = [""]
-        self.texts: List[str] = [""]
+        self.text: str = text
         self.base_image_path: str = ""
         self.text_image_path: str = ""
         self.last_prompt: str = ""
         self.photo_image = None  # ImageTk.PhotoImage for UI
+        self.was_violation: bool = False
+        self.was_accidental: bool = False
+        self.negative_prompt: str = ""
 
 
 class SlideManager:
@@ -88,7 +96,7 @@ class SlideManager:
         else:
             self.slides = [Slide() for _ in sentences]
             for i, s in enumerate(sentences):
-                self.slides[i].texts = [s]
+                self.slides[i].text = s
         self.current_index = 0
 
     def get_current(self) -> Optional[Slide]:
@@ -128,6 +136,7 @@ class StoryBookApp(tk.Tk):
         self.forge_root = forge_root
         self.forge_port = forge_port
         self.is_generating = False
+        self.generating_slide_index: Optional[int] = None
         try:
             # prefer module-level singleton (already created at import), but
             # call get_image_processor() defensively in case import order differs
@@ -139,7 +148,8 @@ class StoryBookApp(tk.Tk):
         self._setup_styles()
         self._create_frames()
         self.show_frame("StartupFrame")  # Start with startup frame
-        
+        _cpt_module.set_parent(self)    # give the Claude dialog a Tk parent
+
         # Check if we should skip startup (Forge already running)
         self.after(100, self._check_forge_status)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -306,26 +316,42 @@ class StoryBookApp(tk.Tk):
     def _build_prompt_from_slide(self, slide: Slide) -> str:
         if not slide:
             return ""
-        parts = []
+
+        text_content = (slide.text or "").strip()
+
+        pairs = []
         n = min(len(slide.subjects), len(slide.actions))
         for i in range(n):
             subj = (slide.subjects[i] or "").strip()
-            act = (slide.actions[i] or "").strip()
+            act  = (slide.actions[i] or "").strip()
             if subj and act:
-                parts.append(f"{subj} {act}")
+                pairs.append(f"{subj} ({act})")
             elif subj:
-                parts.append(subj)
+                pairs.append(subj)
             elif act:
-                parts.append(f"someone {act}")
-        for t in slide.texts:
-            tclean = (t or "").strip()
-            if tclean:
-                parts.append(tclean)
-        base = ", ".join(parts).strip()
-        if not base:
+                pairs.append(f"someone ({act})")
+
+        if not text_content and not pairs:
             return ""
+
+        lines = []
+        if text_content:
+            lines.append("SLIDE TEXT: " + text_content)
+        if pairs:
+            lines.append("SUBJECTS: " + ", ".join(pairs))
+
+        base = "\n".join(lines).strip()
         enhanced = transformer.enhance_for_storybook(base)
-        final = f"masterpiece, best quality, detailed, {enhanced}" if enhanced else base
+
+        # Store the Claude-provided negative on the slide for use in generation
+        slide.negative_prompt = _cpt_module.get_last_negative()
+
+        # Skip quality boosters on deliberate violation (punishment) images
+        if _cpt_module.peek_violation():
+            final = enhanced or base
+        else:
+            final = f"masterpiece, best quality, detailed, {enhanced}" if enhanced else base
+
         if len(final) > MAX_PROMPT_LENGTH:
             final = final[:MAX_PROMPT_LENGTH].rsplit(",", 1)[0] + "..."
         return final
@@ -335,6 +361,16 @@ class StoryBookApp(tk.Tk):
         if self.is_generating:
             messagebox.showinfo("Please wait", "Image generation already in progress.")
             return
+
+        # First press: configure Claude, then prompt user to press again.
+        if not _cpt_module.is_configured():
+            _cpt_module._ensure_configured()
+            sf = self.frames["SlideFrame"]
+            if _cpt_module.is_configured():
+                sf.status_var.set("Ready -- press Illustrate to generate.")
+                sf.status_label.config(fg=ACCENT)
+            return
+
         sf = self.frames["SlideFrame"]
         sf.save_current_slide_data()
         slide = self.slide_manager.get_current()
@@ -344,20 +380,43 @@ class StoryBookApp(tk.Tk):
         if not prompt.strip():
             messagebox.showwarning("No content", "Please add subjects, actions, or text before illustrating.")
             return
-        slide.last_prompt = prompt
+        slide.was_violation  = _cpt_module.was_violation()
+        slide.was_accidental = _cpt_module.was_accidental_violation()
+        slide.last_prompt    = prompt
+
         sf.show_placeholder_image()
-        self.is_generating = True
-        sf.show_generation_status(True)
-        thread = threading.Thread(target=self._generate_with_retry, args=(slide, prompt, max_retries, sf), daemon=True)
+        self.is_generating           = True
+        self.generating_slide_index  = self.slide_manager.current_index
+
+        # Lock generate/publish buttons and the current slide's text boxes.
+        sf._set_generate_locked(True)
+        sf._lock_entries(True)
+
+        # Show violation text immediately (before image is ready) so user sees it first.
+        if slide.was_violation or slide.was_accidental:
+            sf.show_violation_status(generation_complete=False)
+        else:
+            sf.status_var.set("Generating...")
+            sf.status_label.config(fg=INK_MUTED)
+
+        thread = threading.Thread(
+            target=self._generate_with_retry,
+            args=(slide, prompt, max_retries, sf),
+            daemon=True,
+        )
         thread.start()
 
     def _generate_with_retry(self, slide: Slide, prompt: str, max_retries: int, sf):
+        # Violation slides use a cached image rather than an original generation each time.
+        if slide.was_violation or slide.was_accidental:
+            self._handle_violation_image(slide, slide.was_violation, sf)
+            return
+
         last_exc = None
         for attempt in range(max_retries):
             try:
                 ok = self._generate_single_image(slide, prompt, sf)
                 if ok:
-                    # UI reset is handled by _update_slide_image via self.after — do nothing here.
                     return
                 else:
                     logger.warning("Generation attempt %d failed (no exception).", attempt + 1)
@@ -368,6 +427,64 @@ class StoryBookApp(tk.Tk):
         self.after(0, lambda: messagebox.showerror("Generation failed", f"Failed after {max_retries} attempts.\n{last_exc}"))
         self.after(0, sf.show_generation_status, False)
         self.after(0, lambda: setattr(self, "is_generating", False))
+        self.after(0, lambda: setattr(self, "generating_slide_index", None))
+
+    def _handle_violation_image(self, slide: Slide, deliberate: bool, sf) -> None:
+        """Background thread: load cached violation image or generate-and-cache it."""
+        import shutil
+        cache_path = _VIOLATION_DELIBERATE if deliberate else _VIOLATION_ACCIDENTAL
+        os.makedirs(_VIOLATION_CACHE_DIR, exist_ok=True)
+
+        if not os.path.exists(cache_path):
+            # First occurrence — generate via Forge and save to cache.
+            if not self.forge_handler or not self.forge_handler.running:
+                logger.error("Forge unavailable for violation image generation.")
+                self.after(0, lambda: setattr(self, "is_generating", False))
+                self.after(0, lambda: setattr(self, "generating_slide_index", None))
+                self.after(0, sf.show_generation_status, False)
+                return
+            try:
+                cfg     = self._load_config() or {}
+                gen_cfg = cfg.get("generation", {})
+                negative = (_cpt_module.SAFE_NEGATIVE_DELIBERATE if deliberate
+                            else _cpt_module.SAFE_NEGATIVE)
+                raw_path = self.forge_handler.generate_image(
+                    slide.last_prompt,
+                    output_dir=_VIOLATION_CACHE_DIR,
+                    negative_prompt=negative,
+                    width=gen_cfg.get("width", 512),
+                    height=gen_cfg.get("height", 512),
+                    steps=gen_cfg.get("steps", 25),
+                    cfg_scale=gen_cfg.get("cfg_scale", 7.0),
+                    sampler_name=gen_cfg.get("sampler", "Euler a"),
+                    seed=42,          # fixed seed → consistent violation image
+                    request_timeout=180,
+                )
+                if raw_path and os.path.exists(raw_path):
+                    shutil.copy2(raw_path, cache_path)
+                else:
+                    raise RuntimeError("Forge returned no image path")
+            except Exception as e:
+                logger.error("Failed to generate violation image: %s", e)
+                self.after(0, lambda: setattr(self, "is_generating", False))
+                self.after(0, lambda: setattr(self, "generating_slide_index", None))
+                self.after(0, sf.show_generation_status, False)
+                return
+
+        # Load and display cached image.
+        try:
+            pil = Image.open(cache_path)
+            pil.thumbnail((IMG_W, IMG_H), Image.LANCZOS)
+            tkimg = ImageTk.PhotoImage(pil)
+            slide.photo_image       = tkimg
+            slide.base_image_path   = cache_path
+            slide.text_image_path   = cache_path
+            self.after(0, self._update_slide_image, slide, tkimg)
+        except Exception as e:
+            logger.error("Failed to load cached violation image: %s", e)
+            self.after(0, lambda: setattr(self, "is_generating", False))
+            self.after(0, lambda: setattr(self, "generating_slide_index", None))
+            self.after(0, sf.show_generation_status, False)
 
     def _generate_single_image(self, slide: Slide, prompt: str, slide_frame) -> bool:
         # Ensure Forge handler exists and running
@@ -408,7 +525,7 @@ class StoryBookApp(tk.Tk):
                 steps=gen_cfg.get("steps", 25),
                 cfg_scale=gen_cfg.get("cfg_scale", 7.0),
                 sampler_name=gen_cfg.get("sampler", "Euler a"),
-                negative_prompt=gen_cfg.get("negative_prompt", "blurry, bad quality, deformed, ugly"),
+                negative_prompt=slide.negative_prompt or gen_cfg.get("negative_prompt", "blurry, bad quality, deformed, ugly"),
                 seed=gen_cfg.get("seed", -1),
                 request_timeout=forge_cfg.get("request_timeout", 180),
             )
@@ -421,7 +538,7 @@ class StoryBookApp(tk.Tk):
             return False
 
         # Overlay text if present
-        text_overlay = "\n".join([t for t in slide.texts if t]).strip()
+        text_overlay = (slide.text or "").strip()
         display_path = slide.base_image_path
         if text_overlay:
             try:
@@ -457,77 +574,158 @@ class StoryBookApp(tk.Tk):
         missing = self.slide_manager.get_missing_images()
         if missing:
             res = messagebox.askyesno("Missing images", f"{len(missing)} slides missing images. Generate now?")
-            if res:
-                ok = self._generate_missing_images(missing)
-                if not ok:
-                    messagebox.showerror("Publish aborted", "Failed to generate missing images.")
-                    return
-            else:
+            if not res:
                 messagebox.showwarning("Publish aborted", "All slides must have images to publish.")
                 return
-        # Ask whether PDF or ZIP
+            # Pick format first so the file dialog runs on the main thread before
+            # the background generation starts.
+            fmt, fname = self._pick_publish_format()
+            if not fname:
+                return
+            def on_complete(ok: bool):
+                if ok:
+                    self._do_publish(fmt, fname)
+                else:
+                    messagebox.showwarning("Partial", "Some images failed to generate; publishing what was created.")
+                    self._do_publish(fmt, fname)
+            self._generate_missing_images(missing, on_complete)
+            return
+
+        fmt, fname = self._pick_publish_format()
+        if fname:
+            self._do_publish(fmt, fname)
+
+    def _pick_publish_format(self):
+        """Ask user for PDF vs ZIP and a save path. Returns (is_pdf: bool, fname: str)."""
         if self._check_pdf_support():
-            choice = messagebox.askyesno("Publish format", "Create PDF file? Yes for PDF, No for ZIP.")
+            is_pdf = messagebox.askyesno("Publish format", "Create PDF file? Yes for PDF, No for ZIP.")
         else:
             messagebox.showinfo("PDF not available", "ReportLab missing; creating ZIP instead.")
-            choice = False
+            is_pdf = False
         default_name = f"storybook_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        if choice:
-            fname = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF","*.pdf")], initialfile=f"{default_name}.pdf")
-            if fname:
-                self._create_pdf(fname)
+        if is_pdf:
+            fname = filedialog.asksaveasfilename(
+                defaultextension=".pdf", filetypes=[("PDF", "*.pdf")],
+                initialfile=f"{default_name}.pdf")
         else:
-            fname = filedialog.asksaveasfilename(defaultextension=".zip", filetypes=[("ZIP","*.zip")], initialfile=f"{default_name}.zip")
-            if fname:
-                self._create_zip(fname)
+            fname = filedialog.asksaveasfilename(
+                defaultextension=".zip", filetypes=[("ZIP", "*.zip")],
+                initialfile=f"{default_name}.zip")
+        return is_pdf, fname
 
-    def _generate_missing_images(self, indices: List[int]) -> bool:
+    def _do_publish(self, is_pdf: bool, fname: str):
+        if not fname:
+            return
+        if is_pdf:
+            self._create_pdf(fname)
+        else:
+            self._create_zip(fname)
+
+    def _generate_missing_images(self, indices: List[int], on_complete) -> None:
+        """
+        Generate images for the given slide indices in a background thread.
+        Calls on_complete(success: bool) on the main thread when finished.
+        """
         total = len(indices)
+        sf = self.frames["SlideFrame"]
+
         progress = tk.Toplevel(self)
         progress.title("Generating Images")
-        progress.geometry("360x140")
+        progress.geometry("360x160")
         progress.transient(self)
         progress.grab_set()
-        ttk.Label(progress, text=f"Generating {total} images...").pack(pady=10)
+        ttk.Label(progress, text=f"Generating {total} missing image(s)...").pack(pady=10)
         pvar = tk.DoubleVar()
-        pb = ttk.Progressbar(progress, maximum=total, variable=pvar, length=320)
-        pb.pack(pady=8)
-        status = tk.Label(progress, text="Starting...")
-        status.pack(pady=4)
+        ttk.Progressbar(progress, maximum=total, variable=pvar, length=320).pack(pady=8)
+        status_lbl = tk.Label(progress, text="Starting...")
+        status_lbl.pack(pady=4)
         progress.update()
-        success = 0
-        try:
+
+        sf._set_generate_locked(True)
+
+        def worker():
+            success = 0
             for i, idx in enumerate(indices):
-                status.config(text=f"Generating slide {idx+1} of {self.slide_manager.count()}...")
-                pvar.set(i + 1)
-                progress.update()
-                if self._generate_slide_image_sync(idx):
+                def _upd(i=i, idx=idx):
+                    status_lbl.config(text=f"Slide {idx + 1} of {self.slide_manager.count()}...")
+                    pvar.set(i + 1)
+                self.after(0, _upd)
+                ok = self._generate_slide_image_batch(idx)
+                if ok:
                     success += 1
                 else:
-                    logger.warning("Failed generation for slide %d", idx)
-        finally:
-            progress.destroy()
-        if success == total:
-            messagebox.showinfo("Success", f"Generated all {total} missing images.")
-            return True
-        else:
-            messagebox.showwarning("Partial", f"Generated {success} of {total} images.")
-            return success > 0
+                    logger.warning("Batch generation failed for slide %d", idx)
 
-    def _generate_slide_image_sync(self, slide_index: int) -> bool:
-        orig = self.slide_manager.current_index
+            def finish():
+                try:
+                    progress.destroy()
+                except Exception:
+                    pass
+                sf._set_generate_locked(False)
+                on_complete(success == total)
+
+            self.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _generate_slide_image_batch(self, slide_index: int) -> bool:
+        """
+        Generate an image for one slide without touching current_index or firing
+        any UI callbacks. Safe to call from a background thread.
+        """
+        slide = self.slide_manager.slides[slide_index] if 0 <= slide_index < len(self.slide_manager.slides) else None
+        if not slide:
+            return False
+
+        prompt = self._build_prompt_from_slide(slide)
+        if not prompt:
+            return False
+        slide.last_prompt = prompt
+
+        if not self.forge_handler or not self.forge_handler.running:
+            return False
+
+        cfg     = self._load_config() or {}
+        gen_cfg = cfg.get("generation", {})
+        out_cfg = cfg.get("output", {})
+        forge_cfg = cfg.get("forge", {})
+
         try:
-            self.slide_manager.current_index = slide_index
-            slide = self.slide_manager.get_current()
-            if not slide:
+            negative = slide.negative_prompt or gen_cfg.get("negative_prompt", "blurry, bad quality, deformed, ugly")
+            outpath = self.forge_handler.generate_image(
+                prompt,
+                output_dir=out_cfg.get("output_dir", "generated_images"),
+                negative_prompt=negative,
+                width=gen_cfg.get("width", 512),
+                height=gen_cfg.get("height", 512),
+                steps=gen_cfg.get("steps", 25),
+                cfg_scale=gen_cfg.get("cfg_scale", 7.0),
+                sampler_name=gen_cfg.get("sampler", "Euler a"),
+                seed=gen_cfg.get("seed", -1),
+                request_timeout=forge_cfg.get("request_timeout", 180),
+            )
+            if not outpath or not os.path.exists(outpath):
                 return False
-            prompt = self._build_prompt_from_slide(slide)
-            if not prompt:
-                return False
-            slide.last_prompt = prompt
-            return self._generate_single_image(slide, prompt, self.frames["SlideFrame"])
-        finally:
-            self.slide_manager.current_index = orig
+            slide.base_image_path = str(outpath)
+        except Exception as e:
+            logger.error("Batch generate_image error: %s", e)
+            return False
+
+        text_overlay = (slide.text or "").strip()
+        if text_overlay:
+            try:
+                over = self.image_processor.overlay_text(
+                    base_image_path=slide.base_image_path,
+                    text=text_overlay[:MAX_TEXT_OVERLAY],
+                    position="bottom",
+                )
+                slide.text_image_path = str(over) if over and os.path.exists(over) else slide.base_image_path
+            except Exception:
+                slide.text_image_path = slide.base_image_path
+        else:
+            slide.text_image_path = slide.base_image_path
+
+        return True
 
     def _check_pdf_support(self) -> bool:
         try:
@@ -556,9 +754,6 @@ class StoryBookApp(tk.Tk):
                     except Exception:
                         story.append(Paragraph("[Image unavailable]", styles["Normal"]))
                         story.append(Spacer(1, 12))
-                    if sl.texts and sl.texts[0].strip():
-                        story.append(Paragraph(sl.texts[0], styles["Normal"]))
-                        story.append(Spacer(1, 18))
             doc.build(story)
             messagebox.showinfo("Success", f"PDF created: {filename}")
         except Exception as e:
@@ -579,8 +774,8 @@ class StoryBookApp(tk.Tk):
                         storytxt += "Subjects: " + ", ".join(s for s in sl.subjects if s.strip()) + "\n"
                     if sl.actions and any(a.strip() for a in sl.actions):
                         storytxt += "Actions: " + ", ".join(a for a in sl.actions if a.strip()) + "\n"
-                    if sl.texts and sl.texts[0].strip():
-                        storytxt += "Text: " + sl.texts[0] + "\n"
+                    if sl.text and sl.text.strip():
+                        storytxt += "Text: " + sl.text + "\n"
                     if sl.last_prompt:
                         storytxt += "Prompt: " + sl.last_prompt[:300] + "...\n"
                     storytxt += "\n"
@@ -592,7 +787,7 @@ class StoryBookApp(tk.Tk):
 
     # ----------------- UI updates -----------------
     def _update_slide_image(self, slide: "Slide", photo_image):
-        slide.photo_image = photo_image  # store on the correct slide regardless of navigation
+        slide.photo_image = photo_image
         sf = self.frames["SlideFrame"]
         if self.slide_manager.get_current() is slide:
             sf.image_label.config(image=photo_image)
@@ -602,8 +797,13 @@ class StoryBookApp(tk.Tk):
             if slide.last_prompt:
                 sf.prompt_view.insert("1.0", slide.last_prompt)
             sf.prompt_view.configure(state="disabled")
-        sf.show_generation_status(False)
-        self.is_generating = False
+        self.is_generating          = False
+        self.generating_slide_index = None
+        sf._lock_entries(False)
+        if slide.was_violation or slide.was_accidental:
+            sf.show_violation_status(generation_complete=True)
+        else:
+            sf.show_generation_status(False)
 
     def _handle_forge_not_ready(self):
         messagebox.showwarning("Forge not ready", "Forge is not started or not configured. Check storybook_config.json and run.bat.")
@@ -759,6 +959,7 @@ class SlideFrame(tk.Frame):
         # Internal state
         self.subject_entries: List[tk.Entry] = []
         self.action_entries: List[tk.Entry] = []
+        self._placeholders: dict = {}  # maps id(entry) -> placeholder string
 
 
     def update_display(self):
@@ -778,6 +979,7 @@ class SlideFrame(tk.Frame):
             w.destroy()
         self.subject_entries.clear()
         self.action_entries.clear()
+        self._placeholders.clear()
 
         # ensure arrays
         n = max(len(slide.subjects), len(slide.actions), 1)
@@ -806,15 +1008,18 @@ class SlideFrame(tk.Frame):
 
         # text
         self.text_widget.delete("1.0", "end")
-        if slide.texts and slide.texts[0]:
-            self.text_widget.insert("1.0", slide.texts[0])
+        if slide.text:
+            self.text_widget.insert("1.0", slide.text)
 
-        # prompt preview — show last generated prompt if present, else build a live preview
+        # prompt preview — last generated prompt, or raw input draft (no transformer call)
         self.prompt_view.configure(state="normal")
         self.prompt_view.delete("1.0", "end")
-        display_prompt = slide.last_prompt or self.controller._build_prompt_from_slide(slide)
-        if display_prompt:
-            self.prompt_view.insert("1.0", display_prompt)
+        if slide.last_prompt:
+            self.prompt_view.insert("1.0", slide.last_prompt)
+        else:
+            raw = self._raw_prompt_base(slide)
+            if raw:
+                self.prompt_view.insert("1.0", raw)
         self.prompt_view.configure(state="disabled")
 
         # image
@@ -825,6 +1030,12 @@ class SlideFrame(tk.Frame):
             self.show_placeholder_image()
 
         self.status_var.set(f"Slide {cur} / {total}")
+        self.status_label.config(fg=INK_MUTED)
+
+        # Lock entries if this slide is currently generating.
+        if (self.controller.is_generating and
+                self.controller.generating_slide_index == self.controller.slide_manager.current_index):
+            self._lock_entries(True)
 
     def _rebuild_slide_nav(self):
         for btn in self.slide_nav_buttons:
@@ -864,16 +1075,53 @@ class SlideFrame(tk.Frame):
         self.controller.slide_manager.current_index = index
         self.update_display()
 
+    def _raw_prompt_base(self, slide) -> str:
+        """Build the raw combined input string without calling the transformer."""
+        parts = []
+        n = min(len(slide.subjects), len(slide.actions))
+        for i in range(n):
+            subj = (slide.subjects[i] or "").strip()
+            act  = (slide.actions[i] or "").strip()
+            if subj and act:
+                parts.append(f"{subj} {act}")
+            elif subj:
+                parts.append(subj)
+            elif act:
+                parts.append(f"someone {act}")
+        tclean = (slide.text or "").strip()
+        if tclean:
+            parts.append(tclean)
+        return ", ".join(parts)
+
+    def _get_entry_value(self, entry: tk.Entry) -> str:
+        """Return the real value of an entry, empty string if it shows placeholder."""
+        val = entry.get()
+        if val == self._placeholders.get(id(entry), ""):
+            return ""
+        return val.strip()
+
     def _update_prompt_preview(self, _event=None):
-        self.save_current_slide_data()
         slide = self.controller.slide_manager.get_current()
         if not slide:
             return
-        prompt = self.controller._build_prompt_from_slide(slide)
+        parts = []
+        for subj_e, act_e in zip(self.subject_entries, self.action_entries):
+            subj = self._get_entry_value(subj_e)
+            act  = self._get_entry_value(act_e)
+            if subj and act:
+                parts.append(f"{subj} {act}")
+            elif subj:
+                parts.append(subj)
+            elif act:
+                parts.append(f"someone {act}")
+        text = self.text_widget.get("1.0", "end").strip()
+        if text:
+            parts.append(text)
+        raw = ", ".join(parts)
         self.prompt_view.configure(state="normal")
         self.prompt_view.delete("1.0", "end")
-        if prompt:
-            self.prompt_view.insert("1.0", prompt)
+        if raw:
+            self.prompt_view.insert("1.0", raw)
         self.prompt_view.configure(state="disabled")
 
     def save_current_slide_data(self):
@@ -885,7 +1133,7 @@ class SlideFrame(tk.Frame):
         text = self.text_widget.get("1.0", "end").strip()
         slide.subjects = subjects or [""]
         slide.actions = actions or [""]
-        slide.texts = [text] if text else [""]
+        slide.text = text
 
     def show_placeholder_image(self):
         try:
@@ -898,29 +1146,42 @@ class SlideFrame(tk.Frame):
         except Exception:
             pass
 
-    def show_generation_status(self, generating: bool):
+    def _set_generate_locked(self, locked: bool) -> None:
+        """Enable or disable the Illustrate and Publish buttons only."""
+        state = ["disabled"] if locked else ["!disabled"]
+        self.illustrate_btn.state(state)
+        self.publish_btn.state(state)
+
+    def _lock_entries(self, locked: bool) -> None:
+        """Lock or unlock the text/subject/action entries for the currently displayed slide."""
+        state = "disabled" if locked else "normal"
+        try:
+            self.text_widget.config(state=state)
+        except Exception:
+            pass
+        for e in self.subject_entries + self.action_entries:
+            try:
+                e.config(state=state)
+            except Exception:
+                pass
+
+    def show_generation_status(self, generating: bool) -> None:
+        self._set_generate_locked(generating)
         if generating:
             self.status_var.set("Generating...")
+            self.status_label.config(fg=INK_MUTED)
         else:
             idx = self.controller.slide_manager.current_index + 1
             cnt = self.controller.slide_manager.count()
             self.status_var.set(f"Slide {idx} / {cnt}")
+            self.status_label.config(fg=INK_MUTED)
 
-    # export current slide
-    def export_current_slide(self):
-        slide = self.controller.slide_manager.get_current()
-        if not slide or not slide.text_image_path or not os.path.exists(slide.text_image_path):
-            messagebox.showwarning("No image", "No image available to export for this slide.")
-            return
-        fname = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG","*.png")], initialfile=f"slide_{self.controller.slide_manager.current_index+1}.png")
-        if not fname:
-            return
-        try:
-            import shutil
-            shutil.copy(slide.text_image_path, fname)
-            messagebox.showinfo("Exported", f"Slide exported to: {fname}")
-        except Exception as e:
-            messagebox.showerror("Export failed", f"Failed to export: {e}")
+    def show_violation_status(self, generation_complete: bool = False) -> None:
+        """Show 'This is a children's program.' warning. Pass generation_complete=True to also re-enable buttons."""
+        self.status_var.set("This is a children's program.")
+        self.status_label.config(fg="#CC0000")
+        if generation_complete:
+            self._set_generate_locked(False)
 
 class StartupFrame(tk.Frame):
     """Frame that shows while Forge is starting"""
