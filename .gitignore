@@ -13,6 +13,7 @@ venv/
 .env
 storybook_config.json
 storybook_config_*.json
+!storybook_config_template.json
 *.pyc
 *.pyo
 *.pyd

@@ -1,0 +1,59 @@
+{
+  "_about": "StoryBook AI configuration file. Copy this file, rename it to storybook_config.json (or storybook_config_sdxl.json for SDXL models), fill in your values, and remove all '_note' and '_about' keys before use.",
+
+  "forge": {
+    "_note": "Settings for the Stable Diffusion Forge WebUI backend.",
+    "path": "REQUIRED — Absolute path to your Forge WebUI installation folder. Example: C:\\Users\\YourName\\stable-diffusion-webui-forge",
+    "port": 7860,
+    "_port_note": "Port Forge's API listens on. 7860 is the default; only change if you've configured Forge differently.",
+    "auto_start": true,
+    "_auto_start_note": "If true, StoryBook AI will launch Forge automatically on startup. Set to false if you start Forge yourself.",
+    "startup_timeout": 300,
+    "_startup_timeout_note": "Seconds to wait for Forge to finish loading before giving up. Increase this on slower machines.",
+    "api_enabled": true,
+    "_api_enabled_note": "Must be true. StoryBook AI communicates with Forge through its REST API.",
+    "nowebui": true,
+    "_nowebui_note": "If true, Forge starts without opening a browser window. Recommended."
+  },
+
+  "generation": {
+    "_note": "Image generation parameters sent to Forge for each slide. These depend heavily on the model (checkpoint) you have loaded.",
+
+    "width": 512,
+    "_width_note": "Output image width in pixels. Use 512 for SD 1.5 / anime models. Use 1024 for SDXL models.",
+
+    "height": 512,
+    "_height_note": "Output image height in pixels. Match width above.",
+
+    "steps": 25,
+    "_steps_note": "Number of diffusion steps. 20-28 is typical. More steps = slower but sometimes more refined. See tensor recommendations.",
+
+    "cfg_scale": 5.0,
+    "_cfg_scale_note": "Classifier-free guidance scale. Controls how closely the image follows the prompt. 5.0-7.5 is typical. Lower = more creative, higher = more literal.",
+
+    "sampler": "DPM++ 2M Karras",
+    "_sampler_note": "Sampling algorithm. Recommended for SD 1.5/anime: 'DPM++ 2M Karras'. Recommended for SDXL: 'DPM++ 2M SDE Karras'. Euler is also acceptable.",
+
+    "seed": -1,
+    "_seed_note": "Random seed. -1 means a new random seed each generation. Set a fixed integer to reproduce the same image.",
+
+    "quality_prefix": "masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest",
+    "_quality_prefix_note": "Quality booster tags appended AFTER your scene description in the prompt. For SD 1.5/anime models use Danbooru-style tags like the default. For SDXL use natural phrases like 'high quality, highly detailed, sharp focus'. These are skipped automatically on violation slides.",
+
+    "negative_prompt": "lowres, (worst quality, bad quality:1.2), bad anatomy, sketch, jpeg artifacts, signature, watermark, old, oldest, censored, bar_censor, simple background, conjoined",
+    "_negative_prompt_note": "Fallback negative prompt used if Claude does not supply one. Describe what you do NOT want in the image. Syntax varies by model — SD 1.5 supports weighted tags like (tag:1.2); SDXL prefers plain phrases."
+  },
+
+  "claude": {
+    "_note": "Controls how Claude generates image prompts. These must match the model type loaded in Forge.",
+
+    "prompt_style": "tags",
+    "_prompt_style_note": "How Claude phrases the image prompt. 'tags' = short comma-separated Danbooru-style keywords (best for SD 1.5 / anime models). 'natural' = descriptive English phrases (best for SDXL). Switching model types requires changing this.",
+
+    "max_prompt_chars": 380,
+    "_max_prompt_chars_note": "Maximum characters Claude's prompt is allowed to reach before truncation. SD 1.5 CLIP encoder fits roughly 380 characters (~77 tokens). SDXL dual encoder fits roughly 750 characters. Set this to match your model.",
+
+    "base_negative": "lowres, (worst quality, bad quality:1.2), bad anatomy, sketch, jpeg artifacts, signature, watermark, old, oldest, censored, bar_censor, simple background, conjoined",
+    "_base_negative_note": "The negative prompt Claude is instructed to output by default. Should match the generation.negative_prompt above. Claude may extend this per-slide based on content."
+  }
+}
