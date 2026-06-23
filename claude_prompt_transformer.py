@@ -14,7 +14,6 @@ Configurable constants (top of file):
     MAX_TOKENS     — cap on output length (tokens)
 """
 
-import json
 import logging
 import threading
 import webbrowser
@@ -53,99 +52,63 @@ SAFE_PROMPT_DELIBERATE = (
     "extreme close-up, single dark eye, shadowed, sinister gaze, deep shadows, "
     "low key lighting, ominous, foreboding, unsettling atmosphere"
 )
-SAFE_NEGATIVE = "scary, violent, dark, disturbing, adult content, text, watermark, blurry"
-SAFE_NEGATIVE_DELIBERATE = "blurry, bad anatomy, watermark, text, logo, happy, cute, bright colors, cheerful, colorful"
+SAFE_NEGATIVE = "lowres, (worst quality, bad quality:1.2), bad anatomy, sketch, jpeg artifacts, signature, watermark, old, oldest, censored, bar_censor, simple background, conjoined, scary, violent, dark, disturbing"
+SAFE_NEGATIVE_DELIBERATE = "lowres, (worst quality, bad quality:1.2), bad anatomy, sketch, jpeg artifacts, signature, watermark, old, oldest, censored, bar_censor, simple background, conjoined, happy, cute, bright colors, cheerful, colorful"
 # -------------------------------------------------------------------------------
 
-# System prompt — cached via cache_control (~75% input cost reduction on repeated calls).
+# Prompt format sections — selected by config "claude.prompt_style".
 # ASCII-only: Windows httpx transport rejects non-ASCII characters in request bodies.
-_SYSTEM_PROMPT = f"""You are a Stable Diffusion image prompt engineer in a children's storybook app for young readers.
 
-Convert the story content into a clean SD image prompt.
-
-OUTPUT - return ONLY a valid JSON object, no explanation, no markdown fences:
-{{"prompt": "...", "negative_prompt": "...", "violation": "none"}}
-
-The "violation" field must be one of: "none", "accidental", "deliberate"
-
-=== INPUT FORMAT ===
-Input may include labeled sections:
-  SLIDE TEXT: [the story sentence - infer setting, mood, and context from this]
-  SUBJECTS: [name (action), name (action) - these take PRIORITY over subjects in SLIDE TEXT]
-
-When SUBJECTS is present, build the prompt around those subjects and their actions first.
-SLIDE TEXT provides background context (setting, mood) but its character names are secondary.
-
-=== SAFETY (check first - highest priority) ===
-Screen the input for: sexual content, illegal activity (violence, drugs, abuse, weapons, crime), gore, horror, or content that sexualises or harms children.
-
-IMPORTANT - do NOT flag common idioms, figures of speech, or dramatic storytelling language. These are safe:
-  "died of laughter", "killing it", "I'm dead tired", "it was murder on my feet",
-  "she fell", "he was dying of embarrassment", "broke her heart", "scared to death"
-  Treat all such phrases by their INTENDED meaning, not by the literal words.
-
-Only flag content where the ACTUAL intended meaning describes violence, illegal acts, or sexual content.
-
-If ACCIDENTALLY inappropriate (genuinely ambiguous, borderline):
-  Return: {{"prompt": "{SAFE_PROMPT_ACCIDENTAL}", "negative_prompt": "{SAFE_NEGATIVE}", "violation": "accidental"}}
-
-If DELIBERATELY inappropriate (clear misuse intent - e.g. "person X kills person Y", explicit sexual acts, drug use):
-  Return: {{"prompt": "{SAFE_PROMPT_DELIBERATE}", "negative_prompt": "{SAFE_NEGATIVE_DELIBERATE}", "violation": "deliberate"}}
-
-=== STYLE ===
-Do NOT include art style descriptors (no "children's book illustration", "watercolor", "cartoon", "anime", "digital art").
-Style is enforced by LoRA and VAE in the pipeline.
-Focus purely on: subjects, actions, setting, lighting, mood.
-
-=== GENDER INFERENCE ===
-Infer gender from names and context. Replace names with a gender/species tag - do NOT keep the name:
-  Male names (Bob, John, Tom, James, Max, Jake, etc.) -> "boy" or "man" based on context
-  Female names (Alice, Mary, Sarah, Emma, Lily, Rose, etc.) -> "girl" or "woman" based on context
-  Animals -> species only ("dog", "cat", "rabbit", "lion")
-  Ambiguous -> "child", "person", or "figure"
-
+_PROMPT_FORMAT_TAGS = """\
 === PROMPT FORMAT - STRICT TAG RULES ===
 Output ONLY short comma-separated tags. No sentences. No connective words (no "with", "in a", "who is", "named", "that", "of a").
 
-WRONG: "boy named Bob with sad expression, downturned mouth, soft natural lighting, melancholic mood, portrait composition"
+WRONG: "boy named Bob with sad expression, downturned mouth, soft natural lighting"
 RIGHT: "boy, sad, soft light, portrait"
 
-WRONG: "little star twinkling brightly in night sky, warm golden glow, peaceful serene celestial scene"
+WRONG: "little star twinkling brightly in night sky, warm golden glow, celestial scene"
 RIGHT: "star, night sky, golden glow"
-
-WRONG: "child gazing upward in wonder, dreamy magical atmosphere"
-RIGHT: "child, gazing up, wonder, magical"
 
 Each tag: 1-3 words. Aim for 5-8 tags. 10 maximum.
 
-Order of tags (only include what is clearly implied):
+Order (only include what is clearly implied):
 1. SUBJECT - gender + age: "boy", "old woman", "baby dragon", "puppy"
 2. EXPRESSION - 1 word: "sad", "laughing", "scared", "surprised"
-3. ACTION - short verb phrase: "running", "reading book", "climbing tree"
+3. ACTION - verb phrase: "running", "reading book", "climbing tree"
 4. SETTING - 1-2 words: "forest", "bedroom", "night sky", "kitchen"
 5. LIGHTING - 1-2 words: "warm light", "moonlight", "bright sun"
 6. MOOD - 1 word, only if strongly implied: "cozy", "magical", "tense"
 
-=== WHAT TO EXCLUDE ===
-- No character names (replace with gender/species)
-- No quality boosters (masterpiece, best quality, 8k) - added by the pipeline
-- No style tags - handled by LoRA/VAE
-- No verbatim story text
-- No text, logos, or UI elements
+When the scene has a prominent background add "scenery" after the setting tag.
+When depth or atmosphere matters add "volumetric lighting" after the lighting tag."""
 
-=== negative_prompt ===
-Standard SD negatives relevant to child-safe content:
-blurry, bad anatomy, deformed, ugly, watermark, text, logo, adult content, violence, scary, dark, disturbing
-Max 120 characters."""
+_PROMPT_FORMAT_NATURAL = """\
+=== PROMPT FORMAT - NATURAL LANGUAGE ===
+Output descriptive phrases separated by commas. This model understands full descriptions, not single tags.
+
+WRONG: "boy, sad, forest, warm light"
+RIGHT: "sad young boy, standing in a sunlit forest, warm dappled light filtering through trees"
+
+WRONG: "star, night sky, golden glow"
+RIGHT: "single glowing star in a vast dark night sky, soft golden radiance"
+
+15-25 words total. Ordering:
+1. SUBJECT with attributes: "sad young boy", "elderly woman with kind eyes", "small golden retriever puppy"
+2. ACTION in context: "standing quietly", "running through tall grass", "gazing up in wonder"
+3. SETTING with detail: "sunlit forest clearing", "cozy bedroom at night", "open meadow at sunrise"
+4. LIGHTING: "warm afternoon light", "soft moonlight", "bright midday sun"
+5. MOOD if strongly implied: "peaceful and serene", "mysterious", "joyful\""""
 
 
 # -- Session state — held in memory only, never written to disk -----------------
-_api_key:       Optional[str]      = None
-_use_claude:    Optional[bool]     = None   # None = user has not been asked yet
-_parent_win:    Optional[tk.Misc]  = None
-_was_violation: bool               = False  # True after a deliberate safety block
-_was_accidental: bool               = False  # True after an accidental safety block
-_last_negative:  str                = ""     # negative_prompt from the last Claude call
+_api_key:             Optional[str]  = None
+_use_claude:          Optional[bool] = None   # None = user has not been asked yet
+_parent_win:          Optional[tk.Misc] = None
+_was_violation:       bool           = False
+_was_accidental:      bool           = False
+_last_negative:       str            = ""
+_max_prompt_chars:    int            = 380    # overridden by configure_from_model_config
+_active_system_prompt: str           = ""     # built by configure_from_model_config
 # -------------------------------------------------------------------------------
 
 
@@ -193,6 +156,93 @@ def set_parent(window: tk.Misc) -> None:
     """
     global _parent_win
     _parent_win = window
+
+
+def get_max_prompt_chars() -> int:
+    """Return the character budget for the final SD prompt (model-dependent)."""
+    return _max_prompt_chars
+
+
+def configure_from_model_config(cfg: dict) -> None:
+    """
+    Rebuild the active system prompt and character limit from the loaded
+    storybook_config dict.  Call once at startup and again on config switch.
+    """
+    global _active_system_prompt, _max_prompt_chars
+    gen_cfg   = cfg.get("generation", {})
+    clude_cfg = cfg.get("claude", {})
+
+    style         = clude_cfg.get("prompt_style", "tags")
+    quality_note  = gen_cfg.get(
+        "quality_prefix",
+        "masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest",
+    )
+    base_negative = clude_cfg.get(
+        "base_negative",
+        "lowres, (worst quality, bad quality:1.2), bad anatomy, sketch, jpeg artifacts, "
+        "signature, watermark, old, oldest, censored, bar_censor, simple background, conjoined",
+    )
+    _max_prompt_chars = int(clude_cfg.get("max_prompt_chars", 380))
+
+    format_section    = _PROMPT_FORMAT_NATURAL if style == "natural" else _PROMPT_FORMAT_TAGS
+    _active_system_prompt = _assemble_system_prompt(format_section, quality_note, base_negative)
+    logger.info("Prompt style: %s | max chars: %d", style, _max_prompt_chars)
+
+
+def _assemble_system_prompt(format_section: str, quality_note: str, base_negative: str) -> str:
+    return f"""You are a Stable Diffusion image prompt engineer in a children's storybook app for young readers.
+
+Convert the story content into a clean SD image prompt by calling the generate_slide_prompt tool.
+
+=== INPUT FORMAT ===
+Input may include labeled sections:
+  SLIDE TEXT: [the story sentence - infer setting, mood, and context from this]
+  SUBJECTS: [name (action), name (action) - these take PRIORITY over subjects in SLIDE TEXT]
+
+When SUBJECTS is present, build the prompt around those subjects and their actions first.
+SLIDE TEXT provides background context (setting, mood) but its character names are secondary.
+
+=== SAFETY (check first - highest priority) ===
+Screen the input for: sexual content, illegal activity (violence, drugs, abuse, weapons, crime), gore, horror, or content that sexualises or harms children.
+
+IMPORTANT - do NOT flag common idioms, figures of speech, or dramatic storytelling language. These are safe:
+  "died of laughter", "killing it", "I'm dead tired", "it was murder on my feet",
+  "she fell", "he was dying of embarrassment", "broke her heart", "scared to death"
+  Treat all such phrases by their INTENDED meaning, not by the literal words.
+
+Only flag content where the ACTUAL intended meaning describes violence, illegal acts, or sexual content.
+
+If ACCIDENTALLY inappropriate (genuinely ambiguous, borderline):
+  Call the tool with: prompt="{SAFE_PROMPT_ACCIDENTAL}", negative_prompt="{SAFE_NEGATIVE}", violation="accidental"
+
+If DELIBERATELY inappropriate (clear misuse intent - e.g. "person X kills person Y", explicit sexual acts, drug use):
+  Call the tool with: prompt="{SAFE_PROMPT_DELIBERATE}", negative_prompt="{SAFE_NEGATIVE_DELIBERATE}", violation="deliberate"
+
+=== STYLE ===
+Do NOT include art style descriptors (no "children's book illustration", "watercolor", "cartoon", "anime", "digital art").
+Style is enforced by LoRA and VAE in the pipeline.
+Focus purely on: subjects, actions, setting, lighting, mood.
+
+=== GENDER INFERENCE ===
+Infer gender from names and context. Replace names with a gender/species description - do NOT keep the name:
+  Male names (Bob, John, Tom, James, Max, Jake, etc.) -> "boy" or "man" based on context
+  Female names (Alice, Mary, Sarah, Emma, Lily, Rose, etc.) -> "girl" or "woman" based on context
+  Animals -> species only ("dog", "cat", "rabbit", "lion")
+  Ambiguous -> "child", "person", or "figure"
+
+{format_section}
+
+=== WHAT TO EXCLUDE ===
+- No character names (replace with gender/species)
+- No quality boosters - the pipeline appends these after your output: {quality_note}
+- No style tags - handled by LoRA/VAE
+- No verbatim story text
+- No text, logos, or UI elements
+
+=== negative_prompt ===
+Use this base for all non-violation slides:
+{base_negative}
+Add content-specific terms only if the scene genuinely risks them."""
 
 
 def _ask_first_use() -> bool:
@@ -339,39 +389,36 @@ def _notify_and_disable(title: str, message: str) -> None:
     messagebox.showerror(title, message, parent=_parent_win)
 
 
-def _extract_json(raw: str) -> Optional[dict]:
-    """
-    Extract a JSON object from Claude's response even if it wraps it in
-    markdown fences or adds surrounding text.
-    """
-    # Strip markdown code fences (```json ... ``` or ``` ... ```)
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        # drop first line (```json or ```) and last line (```)
-        inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
-        text = "\n".join(inner).strip()
-
-    # Find outermost { ... } braces
-    start = text.find("{")
-    end   = text.rfind("}") + 1
-    if start != -1 and end > start:
-        try:
-            return json.loads(text[start:end])
-        except json.JSONDecodeError:
-            pass
-
-    # Last-ditch: try the whole cleaned string
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("Could not extract JSON from Claude response: %s", raw[:300])
-        return None
+# Tool schema — the API enforces types, required fields, and the violation enum,
+# replacing all manual JSON extraction and key-name guessing.
+_TOOL: dict = {
+    "name": "generate_slide_prompt",
+    "description": "Output the Stable Diffusion prompt for this storybook slide.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "Comma-separated SD tags, 5-10 tags, 10 maximum.",
+            },
+            "negative_prompt": {
+                "type": "string",
+                "description": "Comma-separated negative SD tags, max 120 characters.",
+            },
+            "violation": {
+                "type": "string",
+                "enum": ["none", "accidental", "deliberate"],
+                "description": "Content safety classification.",
+            },
+        },
+        "required": ["prompt", "negative_prompt", "violation"],
+    },
+}
 
 
 def _call_claude(base_text: str) -> Optional[str]:
     """
-    Call Claude Haiku and return the SD prompt string, or None on any failure.
+    Call Claude Haiku via tool use and return the SD prompt string, or None on failure.
     Errors are surfaced as visible popups so they are never silently swallowed.
     """
     global _was_violation, _was_accidental, _last_negative
@@ -388,7 +435,6 @@ def _call_claude(base_text: str) -> Optional[str]:
 
     client = _anthropic.Anthropic(api_key=_api_key)
 
-    raw = ""
     try:
         msg = client.messages.create(
             model=CLAUDE_MODEL,
@@ -396,37 +442,39 @@ def _call_claude(base_text: str) -> Optional[str]:
             system=[
                 {
                     "type": "text",
-                    "text": _SYSTEM_PROMPT,
+                    "text": _active_system_prompt,
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
+            tools=[_TOOL],
+            tool_choice={"type": "tool", "name": "generate_slide_prompt"},
             messages=[{"role": "user", "content": base_text}],
         )
-        raw = msg.content[0].text.strip()
-        data = _extract_json(raw)
+
+        # tool_choice forces exactly one tool_use block — find it.
+        data = None
+        for block in msg.content:
+            if block.type == "tool_use" and block.name == "generate_slide_prompt":
+                data = block.input  # already a validated Python dict
+                break
+
         if data is None:
             messagebox.showwarning(
                 "Claude Prompt Error",
-                "Claude returned an unexpected response and could not build a prompt.\n"
-                "The basic prompt builder will be used for this slide.\n\n"
-                f"Raw response (first 200 chars):\n{raw[:200]}",
+                "Claude did not return a tool call.\n"
+                "The basic prompt builder will be used for this slide.",
                 parent=_parent_win,
             )
             return None
-        violation_type = data.get("violation", "none")
+
+        violation_type  = data.get("violation", "none")
         _was_violation  = (violation_type == "deliberate")
         _was_accidental = (violation_type == "accidental")
         _last_negative  = str(data.get("negative_prompt", "") or "")
 
-        # Accept "prompt" or common fallback key names
-        prompt = (
-            data.get("prompt")
-            or data.get("image_prompt")
-            or data.get("sd_prompt")
-            or data.get("positive_prompt")
-        )
+        prompt = data.get("prompt")
         if not prompt:
-            logger.warning("Claude JSON missing 'prompt' key. Keys found: %s", list(data.keys()))
+            logger.warning("Tool response missing 'prompt' field.")
             return None
         return str(prompt).strip()
 
@@ -526,3 +574,8 @@ class ClaudePromptTransformer:
 
     def batch_enhance(self, texts: List[str]) -> List[str]:
         return [self.enhance_for_storybook(t) for t in texts]
+
+
+# Build the default system prompt at import time so _active_system_prompt is
+# never an empty string even if configure_from_model_config is never called.
+configure_from_model_config({})

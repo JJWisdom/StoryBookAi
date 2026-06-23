@@ -12,6 +12,7 @@ __pycache__/
 venv/
 .env
 storybook_config.json
+storybook_config_*.json
 *.pyc
 *.pyo
 *.pyd

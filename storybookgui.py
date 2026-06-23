@@ -137,6 +137,7 @@ class StoryBookApp(tk.Tk):
         self.forge_port = forge_port
         self.is_generating = False
         self.generating_slide_index: Optional[int] = None
+        self.config_name: str = "storybook_config_sdxl.json"
         try:
             # prefer module-level singleton (already created at import), but
             # call get_image_processor() defensively in case import order differs
@@ -148,7 +149,8 @@ class StoryBookApp(tk.Tk):
         self._setup_styles()
         self._create_frames()
         self.show_frame("StartupFrame")  # Start with startup frame
-        _cpt_module.set_parent(self)    # give the Claude dialog a Tk parent
+        _cpt_module.set_parent(self)
+        _cpt_module.configure_from_model_config(self._load_config() or {})
 
         # Check if we should skip startup (Forge already running)
         self.after(100, self._check_forge_status)
@@ -258,13 +260,18 @@ class StoryBookApp(tk.Tk):
             status(f"❌ Error: {str(e)}")
             logger.error("Forge startup error: %s", e)
     def _load_config(self) -> Optional[dict]:
-        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storybook_config.json")
-        try:
-            if os.path.exists(cfg_path):
-                with open(cfg_path, "r", encoding="utf-8") as fh:
-                    return json.load(fh)
-        except Exception as e:
-            logger.error("Failed to load config: %s", e)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        for name in (self.config_name, "storybook_config.json"):
+            cfg_path = os.path.join(base_dir, name)
+            try:
+                if os.path.exists(cfg_path):
+                    with open(cfg_path, "r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                    if name != self.config_name:
+                        logger.warning("Config '%s' not found; fell back to '%s'.", self.config_name, name)
+                    return data
+            except Exception as e:
+                logger.error("Failed to load config '%s': %s", name, e)
         return None
 
     # ----------------- Story handling -----------------
@@ -313,6 +320,26 @@ class StoryBookApp(tk.Tk):
             sf.update_display()
 
     # ----------------- Prompt building -----------------
+    def _build_slide_context(self, current_slide: Slide) -> str:
+        """
+        Return a CONTEXT block containing the last 2 generated prompts
+        (excluding violations) so Claude maintains visual continuity.
+        Returns empty string when there is nothing useful to pass.
+        """
+        idx = self.slide_manager.slides.index(current_slide) if current_slide in self.slide_manager.slides else -1
+        if idx <= 0:
+            return ""
+        entries = []
+        for s in self.slide_manager.slides[max(0, idx - 2): idx]:
+            if s.last_prompt and not s.was_violation and not s.was_accidental:
+                entries.append(s.last_prompt)
+        if not entries:
+            return ""
+        lines = ["CONTEXT (previous slides - maintain visual consistency for recurring subjects and setting):"]
+        for i, p in enumerate(entries, start=1):
+            lines.append(f"  Slide {idx - len(entries) + i}: {p}")
+        return "\n".join(lines)
+
     def _build_prompt_from_slide(self, slide: Slide) -> str:
         if not slide:
             return ""
@@ -335,6 +362,13 @@ class StoryBookApp(tk.Tk):
             return ""
 
         lines = []
+
+        # Prepend the last 2 non-violation prompts so Claude maintains visual
+        # continuity (character descriptions, setting) across slides.
+        ctx = self._build_slide_context(slide)
+        if ctx:
+            lines.append(ctx)
+
         if text_content:
             lines.append("SLIDE TEXT: " + text_content)
         if pairs:
@@ -350,10 +384,16 @@ class StoryBookApp(tk.Tk):
         if _cpt_module.peek_violation():
             final = enhanced or base
         else:
-            final = f"masterpiece, best quality, detailed, {enhanced}" if enhanced else base
+            cfg = self._load_config() or {}
+            prefix = cfg.get("generation", {}).get(
+                "quality_prefix",
+                "masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest",
+            )
+            final = f"{enhanced}, {prefix}" if enhanced else base
 
-        if len(final) > MAX_PROMPT_LENGTH:
-            final = final[:MAX_PROMPT_LENGTH].rsplit(",", 1)[0] + "..."
+        max_chars = _cpt_module.get_max_prompt_chars()
+        if len(final) > max_chars:
+            final = final[:max_chars].rsplit(",", 1)[0] + "..."
         return final
 
     # ----------------- Image generation -----------------
@@ -571,6 +611,9 @@ class StoryBookApp(tk.Tk):
         if not self.slide_manager.slides:
             messagebox.showwarning("No slides", "There are no slides to publish.")
             return
+        # Ensure Claude dialog runs on the main thread before any background work starts.
+        if not _cpt_module.is_configured():
+            _cpt_module._ensure_configured()
         missing = self.slide_manager.get_missing_images()
         if missing:
             res = messagebox.askyesno("Missing images", f"{len(missing)} slides missing images. Generate now?")
@@ -745,7 +788,7 @@ class StoryBookApp(tk.Tk):
             styles = getSampleStyleSheet()
             story.append(Paragraph("StoryBook", styles["Title"]))
             story.append(Spacer(1, 12))
-            for i, sl in enumerate(self.slide_manager.slides):
+            for sl in self.slide_manager.slides:
                 if sl.text_image_path and os.path.exists(sl.text_image_path):
                     try:
                         img = RLImage(sl.text_image_path, width=6*inch, height=4*inch)
@@ -970,6 +1013,11 @@ class SlideFrame(tk.Frame):
             return
         total = self.controller.slide_manager.count()
         cur = self.controller.slide_manager.current_index + 1
+
+        # Unlock before populating — Tkinter silently drops delete/insert on
+        # disabled widgets, which would leave the previous slide's text visible
+        # and cause save_current_slide_data to clobber the wrong slide.
+        self._lock_entries(False)
 
         # Rebuild the live numbered slide navigator
         self._rebuild_slide_nav()
