@@ -19,7 +19,7 @@ import threading
 import webbrowser
 import tkinter as tk
 from tkinter import messagebox
-from typing import Optional, List
+from typing import Optional
 
 from simple_prompt_transformer import SimplePromptTransformer as _SimpleTransformer
 
@@ -144,6 +144,16 @@ def peek_violation() -> bool:
 def get_last_negative() -> str:
     """Return the negative_prompt string from the most recent Claude call."""
     return _last_negative
+
+
+def get_safe_negative(deliberate: bool) -> str:
+    """Return the safe negative prompt used for violation images."""
+    return SAFE_NEGATIVE_DELIBERATE if deliberate else SAFE_NEGATIVE
+
+
+def ensure_configured() -> None:
+    """Public entry point: run the one-time Claude setup dialog if not already done."""
+    _ensure_configured()
 
 
 def set_parent(window: tk.Misc) -> None:
@@ -547,8 +557,7 @@ def _fallback_enhance(text: str) -> str:
 class ClaudePromptTransformer:
     """
     Drop-in replacement for SimplePromptTransformer.
-    storybookgui.py only calls enhance_for_storybook(); the rest of the
-    interface is preserved for compatibility.
+    storybookgui.py only calls enhance_for_storybook().
     """
 
     def enhance_for_storybook(self, text: str) -> str:
@@ -564,16 +573,6 @@ class ClaudePromptTransformer:
                 return prompt
 
         return _fallback_enhance(text)
-
-    def get_negative_prompt(self) -> str:
-        return (
-            "blurry, bad quality, deformed, ugly, disfigured, poorly drawn, "
-            "extra limbs, mutation, out of frame, watermark, text, logo, "
-            "worst quality, jpeg artifacts, bad anatomy"
-        )
-
-    def batch_enhance(self, texts: List[str]) -> List[str]:
-        return [self.enhance_for_storybook(t) for t in texts]
 
 
 # Build the default system prompt at import time so _active_system_prompt is

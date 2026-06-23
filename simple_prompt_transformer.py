@@ -4,7 +4,7 @@ simple_prompt_transformer.py - Complete and robust prompt transformer
 
 import re
 import random
-from typing import List, Dict, Set
+from typing import List, Dict
 import json
 from pathlib import Path
 
@@ -37,21 +37,6 @@ class SimplePromptTransformer:
             "professional illustration",
             "beautiful composition"
         ]
-        
-        # Negative prompt template
-        self.negative_prompt = (
-            "blurry, bad quality, deformed, ugly, disfigured, poorly drawn, "
-            "extra limbs, mutation, mutated, out of frame, watermark, signature, "
-            "text, logo, worst quality, jpeg artifacts, poorly drawn face, "
-            "bad anatomy, cloned face, gross proportions"
-        )
-        
-        # Verb conjugation helper
-        self.verb_suffixes = {
-            'ing': ['ing', 'eing', 'ying'],
-            'ed': ['ed', 'ied', 'ded'],
-            's': ['s', 'es', 'ies']
-        }
         
         # Common synonyms for enhancement
         self.synonyms = {
@@ -246,25 +231,6 @@ class SimplePromptTransformer:
         prompt = self.build_prompt(keywords)
         
         return prompt
-    
-    def get_negative_prompt(self) -> str:
-        """Get negative prompt for image generation"""
-        return self.negative_prompt
-    
-    def batch_enhance(self, texts: List[str]) -> List[str]:
-        """Enhance multiple texts at once"""
-        return [self.enhance_for_storybook(text) for text in texts]
-
-
-# Singleton instance
-_transformer_instance = None
-
-def get_transformer(config_path: str = None) -> SimplePromptTransformer:
-    """Get transformer instance (singleton)"""
-    global _transformer_instance
-    if _transformer_instance is None:
-        _transformer_instance = SimplePromptTransformer(config_path)
-    return _transformer_instance
 
 
 # Test function

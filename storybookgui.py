@@ -17,7 +17,7 @@ import logging
 import zipfile
 from datetime import datetime
 from typing import List, Optional
-import requests  # Add this near the other imports
+import requests
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, scrolledtext
 
@@ -45,11 +45,9 @@ BORDER = "#C9B1D9"
 
 IMG_W, IMG_H = 420, 300
 TITLE_FONT = ("Georgia", 44, "bold")
-H2_FONT = ("Segoe UI", 11, "bold")
 BODY_FONT = ("Segoe UI", 11)
 
 # Limits
-MAX_PROMPT_LENGTH = 380
 MAX_TEXT_OVERLAY = 1400
 
 # Initialize transformer and image processor
@@ -59,6 +57,26 @@ image_processor = get_image_processor()
 _VIOLATION_CACHE_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_images")
 _VIOLATION_DELIBERATE = os.path.join(_VIOLATION_CACHE_DIR, "violation-intent.png")
 _VIOLATION_ACCIDENTAL = os.path.join(_VIOLATION_CACHE_DIR, "violation-unintent.png")
+
+
+# ===== Helpers =====
+def pair_subjects_actions(pairs, parens: bool = False) -> List[str]:
+    """
+    Format (subject, action) pairs into prompt parts, skipping empty pairs.
+    parens=True  -> "subject (action)"  (used when building the SD prompt)
+    parens=False -> "subject action"    (used for the raw preview text)
+    """
+    parts: List[str] = []
+    for subj, act in pairs:
+        subj = (subj or "").strip()
+        act = (act or "").strip()
+        if subj and act:
+            parts.append(f"{subj} ({act})" if parens else f"{subj} {act}")
+        elif subj:
+            parts.append(subj)
+        elif act:
+            parts.append(f"someone ({act})" if parens else f"someone {act}")
+    return parts
 
 
 # ===== Data model =====
@@ -84,6 +102,9 @@ class SlideManager:
         return len(self.slides)
 
     def create_from_story(self, story_text: str):
+        # Building fresh Slide objects resets per-slide context (last_prompt and
+        # violation flags), so a new story never inherits the previous story's
+        # cumulative prompt context.
         text = (story_text or "").strip()
         if not text:
             self.slides = [Slide()]
@@ -215,7 +236,7 @@ class StoryBookApp(tk.Tk):
                 self.after(3000, lambda: self.show_frame("StartFrame"))
             return
 
-        # Forge is not running — start it (ForgeHandler created inside this thread).
+        # Forge is not running - start it (ForgeHandler created inside this thread).
         startup_frame.update_status("Starting Forge AI Engine...")
         threading.Thread(target=self._start_forge_with_progress, daemon=True).start()
 
@@ -322,22 +343,23 @@ class StoryBookApp(tk.Tk):
     # ----------------- Prompt building -----------------
     def _build_slide_context(self, current_slide: Slide) -> str:
         """
-        Return a CONTEXT block containing the last 2 generated prompts
-        (excluding violations) so Claude maintains visual continuity.
+        Return a CONTEXT block containing every previous slide's generated
+        prompt (excluding violations) so Claude maintains visual continuity.
+        Context is cumulative: slide N sees slides 1..N-1.
         Returns empty string when there is nothing useful to pass.
         """
         idx = self.slide_manager.slides.index(current_slide) if current_slide in self.slide_manager.slides else -1
         if idx <= 0:
             return ""
-        entries = []
-        for s in self.slide_manager.slides[max(0, idx - 2): idx]:
+        entries = []  # (slide_number, prompt) — slide_number is 1-based and skips violations
+        for j, s in enumerate(self.slide_manager.slides[:idx]):
             if s.last_prompt and not s.was_violation and not s.was_accidental:
-                entries.append(s.last_prompt)
+                entries.append((j + 1, s.last_prompt))
         if not entries:
             return ""
         lines = ["CONTEXT (previous slides - maintain visual consistency for recurring subjects and setting):"]
-        for i, p in enumerate(entries, start=1):
-            lines.append(f"  Slide {idx - len(entries) + i}: {p}")
+        for slide_no, p in entries:
+            lines.append(f"  Slide {slide_no}: {p}")
         return "\n".join(lines)
 
     def _build_prompt_from_slide(self, slide: Slide) -> str:
@@ -346,17 +368,7 @@ class StoryBookApp(tk.Tk):
 
         text_content = (slide.text or "").strip()
 
-        pairs = []
-        n = min(len(slide.subjects), len(slide.actions))
-        for i in range(n):
-            subj = (slide.subjects[i] or "").strip()
-            act  = (slide.actions[i] or "").strip()
-            if subj and act:
-                pairs.append(f"{subj} ({act})")
-            elif subj:
-                pairs.append(subj)
-            elif act:
-                pairs.append(f"someone ({act})")
+        pairs = pair_subjects_actions(zip(slide.subjects, slide.actions), parens=True)
 
         if not text_content and not pairs:
             return ""
@@ -404,7 +416,7 @@ class StoryBookApp(tk.Tk):
 
         # First press: configure Claude, then prompt user to press again.
         if not _cpt_module.is_configured():
-            _cpt_module._ensure_configured()
+            _cpt_module.ensure_configured()
             sf = self.frames["SlideFrame"]
             if _cpt_module.is_configured():
                 sf.status_var.set("Ready -- press Illustrate to generate.")
@@ -486,8 +498,7 @@ class StoryBookApp(tk.Tk):
             try:
                 cfg     = self._load_config() or {}
                 gen_cfg = cfg.get("generation", {})
-                negative = (_cpt_module.SAFE_NEGATIVE_DELIBERATE if deliberate
-                            else _cpt_module.SAFE_NEGATIVE)
+                negative = _cpt_module.get_safe_negative(deliberate)
                 raw_path = self.forge_handler.generate_image(
                     slide.last_prompt,
                     output_dir=_VIOLATION_CACHE_DIR,
@@ -613,7 +624,7 @@ class StoryBookApp(tk.Tk):
             return
         # Ensure Claude dialog runs on the main thread before any background work starts.
         if not _cpt_module.is_configured():
-            _cpt_module._ensure_configured()
+            _cpt_module.ensure_configured()
         missing = self.slide_manager.get_missing_images()
         if missing:
             res = messagebox.askyesno("Missing images", f"{len(missing)} slides missing images. Generate now?")
@@ -1002,7 +1013,6 @@ class SlideFrame(tk.Frame):
         # Internal state
         self.subject_entries: List[tk.Entry] = []
         self.action_entries: List[tk.Entry] = []
-        self._placeholders: dict = {}  # maps id(entry) -> placeholder string
 
 
     def update_display(self):
@@ -1027,7 +1037,6 @@ class SlideFrame(tk.Frame):
             w.destroy()
         self.subject_entries.clear()
         self.action_entries.clear()
-        self._placeholders.clear()
 
         # ensure arrays
         n = max(len(slide.subjects), len(slide.actions), 1)
@@ -1125,43 +1134,25 @@ class SlideFrame(tk.Frame):
 
     def _raw_prompt_base(self, slide) -> str:
         """Build the raw combined input string without calling the transformer."""
-        parts = []
-        n = min(len(slide.subjects), len(slide.actions))
-        for i in range(n):
-            subj = (slide.subjects[i] or "").strip()
-            act  = (slide.actions[i] or "").strip()
-            if subj and act:
-                parts.append(f"{subj} {act}")
-            elif subj:
-                parts.append(subj)
-            elif act:
-                parts.append(f"someone {act}")
+        parts = pair_subjects_actions(zip(slide.subjects, slide.actions), parens=False)
         tclean = (slide.text or "").strip()
         if tclean:
             parts.append(tclean)
         return ", ".join(parts)
 
     def _get_entry_value(self, entry: tk.Entry) -> str:
-        """Return the real value of an entry, empty string if it shows placeholder."""
-        val = entry.get()
-        if val == self._placeholders.get(id(entry), ""):
-            return ""
-        return val.strip()
+        """Return the stripped value of an entry."""
+        return entry.get().strip()
 
     def _update_prompt_preview(self, _event=None):
         slide = self.controller.slide_manager.get_current()
         if not slide:
             return
-        parts = []
-        for subj_e, act_e in zip(self.subject_entries, self.action_entries):
-            subj = self._get_entry_value(subj_e)
-            act  = self._get_entry_value(act_e)
-            if subj and act:
-                parts.append(f"{subj} {act}")
-            elif subj:
-                parts.append(subj)
-            elif act:
-                parts.append(f"someone {act}")
+        pairs = [
+            (self._get_entry_value(subj_e), self._get_entry_value(act_e))
+            for subj_e, act_e in zip(self.subject_entries, self.action_entries)
+        ]
+        parts = pair_subjects_actions(pairs, parens=False)
         text = self.text_widget.get("1.0", "end").strip()
         if text:
             parts.append(text)
