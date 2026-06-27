@@ -32,7 +32,14 @@ There were several problems once I actually had something running.
 
 - Threading issues. UI updates were happening on background threads and Tkinter is not thread-safe. The result was crashes that were hard to reproduce. The fix was routing UI state changes through self.after(0, ...) so they run on the main thread.
 
-- The prompt transformer was not really a transformer. It produced prompts like "dragon, blew, fire, mountain, icy, blowing, storybook art style, masterpiece". Stable Diffusion needs more than that, composition, lighting, mood, context. A list of words stripped from a sentence does not give it that.
+- The prompt transformer was not really a transformer. It produced prompts like
+  "dragon, blew, fire, mountain, icy, blowing, storybook art style, masterpiece".
+  It also produced weird non-words like "goldenning", "dragonning", "thering" because
+  the logic just stripped a sentence and appended suffixes to whatever was left.
+  Stable Diffusion needs more than a list of words, it needs composition, lighting,
+  mood, context.
+  
+- The same character would not hold from one slide to the next. In the test the dragon looks different on every slide, and on the slide where it is supposed to be happy it came out as an unrecognizable red shape instead of the golden dragon. For a storybook that is a real failure, not a cosmetic one. The whole point is that the character is the same character or a similar one on every page. The old screenshots in the repo show both problems directly, and this is what the Claude integration and the name stripping were built to fix.
 
 - ForgeHandler instances were getting created in multiple places and some got overwritten before being shut down. Forge would keep running in the background with nothing to kill it. I had to use Task Manager more than once.
 

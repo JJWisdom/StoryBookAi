@@ -20,6 +20,28 @@ Built as a personal project and Claude Corps portfolio piece.
 
 ---
 
+## Before and After
+
+The original prompt builder stripped words from each sentence and spliced them back
+together. It sometimes produced fine images, but it was unreliable. The Claude
+integration replaced it. The old screenshots below are from an earlier build, before
+the UI redesign.
+
+<img src="Project%20Demonstration/Old%20Slide%20Gen%201.PNG" width="400" alt="Old generation slide 1">
+<img src="Project%20Demonstration/Old%20Slide%20Gen%202.PNG" width="400" alt="Old generation slide 2">
+<img src="Project%20Demonstration/Old%20Slide%20Gen%203.PNG" width="400" alt="Old generation slide 3">
+
+Two things are wrong here. The prompts have malformed words in them, "goldenning",
+"dragonning", "thering", from the splicing logic. And the dragon does not stay the
+same character between slides. On the "happy" slide it is not even recognizable as
+the golden dragon anymore.
+
+The Claude version keeps the character consistent across slides. The full output is
+in `BlueDragon.pdf`. Why this happens, and what I had to fix to get there, is written
+up in `REFLECTION.md`.
+
+---
+
 ## Requirements
 
 - Windows 10/11
