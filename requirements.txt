@@ -1,4 +1,4 @@
-# StoryBook AI - Dependencies
+# StoryForge - Dependencies
 
 # Core requirements
 Pillow>=10.0.0

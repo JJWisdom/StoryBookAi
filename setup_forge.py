@@ -248,7 +248,7 @@ def _select_default_model(forge_path: Path) -> str:
 def main():
     """Main setup routine"""
     print("=" * 60)
-    print("STORYBOOK AI - FORGE UI SETUP")
+    print("STORYFORGE - FORGE UI SETUP")
     print("=" * 60)
     
     # Check requirements

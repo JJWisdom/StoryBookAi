@@ -1,7 +1,7 @@
 """
 storybookgui.py
 
-Drop-in GUI for StoryBook AI.
+Drop-in GUI for StoryForge.
 - preserves original layout/behavior
 - integrates with ForgeHandler (start_forge(), generate_image())
 - uses get_image_processor().overlay_text(...) for text overlay
@@ -147,7 +147,7 @@ class StoryBookApp(tk.Tk):
     
     def __init__(self, forge_root: Optional[str] = None, forge_port: int = 7860):
         super().__init__()
-        self.title("StoryBook AI")
+        self.title("StoryForge")
         self.geometry("1000x720")
         self.configure(bg=BG)
 
@@ -797,7 +797,7 @@ class StoryBookApp(tk.Tk):
             doc = SimpleDocTemplate(filename, pagesize=letter)
             story = []
             styles = getSampleStyleSheet()
-            story.append(Paragraph("StoryBook", styles["Title"]))
+            story.append(Paragraph("StoryForge", styles["Title"]))
             story.append(Spacer(1, 12))
             for sl in self.slide_manager.slides:
                 if sl.text_image_path and os.path.exists(sl.text_image_path):
@@ -898,7 +898,7 @@ class StartFrame(tk.Frame):
 
     def _build(self):
         # Title (preserve original styling)
-        tk.Label(self, text="StoryBook AI", font=TITLE_FONT, bg=BG, fg=INK).place(relx=0.5, y=64, anchor="center")
+        tk.Label(self, text="StoryForge", font=TITLE_FONT, bg=BG, fg=INK).place(relx=0.5, y=64, anchor="center")
         tk.Label(self, text="Create Illustrated Stories with AI", font=("Segoe UI", 14), bg=BG, fg=INK_MUTED).place(relx=0.5, y=110, anchor="center")
 
         card = tk.Frame(self, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
@@ -1231,7 +1231,7 @@ class StartupFrame(tk.Frame):
         
     def _build(self):
         # Title
-        tk.Label(self, text="StoryBook AI", font=TITLE_FONT, bg=BG, fg=INK).place(relx=0.5, y=120, anchor="center")
+        tk.Label(self, text="StoryForge", font=TITLE_FONT, bg=BG, fg=INK).place(relx=0.5, y=120, anchor="center")
         
         # Status
         self.status_label = tk.Label(self, text="Starting Forge AI Engine...", font=("Segoe UI", 14), bg=BG, fg=INK)

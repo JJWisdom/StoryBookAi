@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo STORYBOOK AI - LAUNCHER
+echo STORYFORGE - LAUNCHER
 echo ========================================
 echo.
 
@@ -33,7 +33,7 @@ if exist "venv\Scripts\activate.bat" (
 )
 
 REM Ask if setup is needed
-echo Is this your first time running StoryBook AI?
+echo Is this your first time running StoryForge?
 set /p setup="Run setup? (y/n): "
 
 if /i "%setup%"=="y" (
@@ -49,7 +49,7 @@ if /i "%setup%"=="y" (
 
 echo.
 echo ========================================
-echo STARTING STORYBOOK AI
+echo STARTING STORYFORGE
 echo ========================================
 echo.
 

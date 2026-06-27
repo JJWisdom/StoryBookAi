@@ -151,7 +151,7 @@ def print_summary():
     """Print setup summary"""
     print_header("SETUP COMPLETE")
     
-    print("\nStoryBook AI is ready!")
+    print("\nStoryForge is ready!")
     print("\nNEXT STEPS:")
     print("1. Configure Forge UI in storybook_config.json")
     print("2. Place Stable Diffusion models in:")
@@ -172,7 +172,7 @@ def print_summary():
 
 def main():
     """Main setup routine"""
-    print_header("STORYBOOK AI SETUP")
+    print_header("STORYFORGE SETUP")
     
     # New: Check if running in virtualenv
     if sys.prefix == sys.base_prefix:
