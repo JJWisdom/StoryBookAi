@@ -5,7 +5,7 @@ StoryForge is a Windows desktop app that turns a short story into an illustrated
 
 Built as a personal project and Claude Corps portfolio piece.
 
-<!-- TODO: screenshot or GIF here -->
+![Startup Display](Project%20Demonstration/Startup%20Display.gif)
 
 ---
 
@@ -75,13 +75,31 @@ Two things about Forge that are not obvious. The API has to be explicitly enable
 
 On the first Illustrate press you will be asked whether to enable Claude prompt enhancement. If yes, enter your Anthropic API key. It is validated immediately with a test call and held in memory for the session only. It is never written to disk.
 
+![Claude API prompt](Project%20Demonstration/Claude%20API%20prompt.gif)
+
 ---
 
 ## Usage
 
 1. Run `run.bat` and wait for Forge to start. First launch takes a few minutes.
 2. Type your story and click Create Storybook.
+
+![Typing Prompt](Project%20Demonstration/Typing%20Prompt.gif)
+
+![Finishing Prompt into Create StoryBook](Project%20Demonstration/Finishing%20Prompt%20into%20Create%20StoryBook.gif)
+
 3. For each slide, review the subjects and actions, edit the overlay text, click Illustrate.
+
+![Typing Subject and Action](Project%20Demonstration/Typing%20Subject%20and%20Action.gif)
+
+![Slide 1 Gen](Project%20Demonstration/Slide%201%20Gen.gif)
+
+![Slide 2 Gen](Project%20Demonstration/Slide%202%20Gen.gif)
+
+![Slide 3 Gen](Project%20Demonstration/Slide%203%20Gen.gif)
+
+![Slide 4 Gen](Project%20Demonstration/Slide%204%20Gen.gif)
+
 4. Navigate with the arrows or numbered slide buttons. Add or remove slides as needed.
 5. Click Publish to export as PDF or ZIP.
 
